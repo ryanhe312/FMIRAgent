@@ -1,3 +1,11 @@
+import cv2
+import glob
+import numpy as np
+
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+from tifffile import imread
+
 import os
 import cv2
 import argparse
@@ -307,7 +315,7 @@ def lf_extract_fn(lf2d, n_num=11, mode='toChannel', padding=False):
 
     return lf_extra
 
-def load_models(device, chop, quantization, progress=gr.Progress()):
+def load_models(device, chop, quantization, args=None, progress=gr.Progress()):
     global sr_models, noise_models, proj_models, iso_models, vol_models, processor, language_model
 
     load_fn = partial(load_model, device=device, chop=chop, quantization=quantization)
@@ -341,53 +349,55 @@ def run_plan(data_image, plan, progress=gr.Progress()):
         pass
 
     image = imread(data_image)
+    print(image.shape, image.max(), image.min())
     image = normalize(image, 0, 100, clip=True)
     lrs = torch.from_numpy(np.ascontiguousarray(image)).float().unsqueeze(0).cuda()
 
     image = lrs.clone()
     print(f"Plan: {plan}")
 
-    if "Volumetric" in plan:
-        vol_model = vol_models[plan.split()[0]]
-        sr_model = sr_models[plan.split()[1]]
-        noise_model = noise_models[plan.split()[2]]
-    elif "Projection" in plan:
-        proj_model = proj_models[plan.split()[0]]
-        sr_model = sr_models[plan.split()[1]]
-        noise_model = noise_models[plan.split()[2]]
-    elif "Isotropic" in plan:
-        iso_model = iso_models[plan.split()[0]]
-        sr_model = sr_models[plan.split()[1]]
-        noise_model = noise_models[plan.split()[2]]
-        image = image.unsqueeze(0)
-    else:
-        sr_model = sr_models[plan.split()[0]]
-        noise_model = noise_models[plan.split()[1]]
-        image = image.unsqueeze(0)
+    if plan:
+        if "Volumetric" in plan:
+            vol_model = vol_models[plan.split()[0]]
+            sr_model = sr_models[plan.split()[1]]
+            noise_model = noise_models[plan.split()[2]]
+        elif "Projection" in plan:
+            proj_model = proj_models[plan.split()[0]]
+            sr_model = sr_models[plan.split()[1]]
+            noise_model = noise_models[plan.split()[2]]
+        elif "Isotropic" in plan:
+            iso_model = iso_models[plan.split()[0]]
+            sr_model = sr_models[plan.split()[1]]
+            noise_model = noise_models[plan.split()[2]]
+            image = image.unsqueeze(0)
+        else:
+            sr_model = sr_models[plan.split()[0]]
+            noise_model = noise_models[plan.split()[1]]
+            image = image.unsqueeze(0)
 
-    out = []
-    print(image.shape, image.max(), image.min())
-    for i in tqdm(range(0,image.shape[1])):
-        out.append(sr_model(noise_model(image[:, i:i+1], 0).clamp(0, 1), 0).clamp(0, 1))
-    image = torch.cat(out, 1)
+        out = []
+        print(image.shape, image.max(), image.min())
+        for i in tqdm(range(0,image.shape[1])):
+            out.append(sr_model(noise_model(image[:, i:i+1], 0).clamp(0, 1), 0).clamp(0, 1))
+        image = torch.cat(out, 1)
 
-    if "Volumetric" in plan:
-        image = image * 2 - 1
-        image = vol_model(image, 0)
-        image = image[1] if image is tuple else image
-        image = (image.clamp(-1, 1) + 1) / 2 
-    elif "Projection" in plan:
-        image = proj_model(image, 0)
-        image = image[1] if image is tuple else image
-    elif "Isotropic" in plan:
-        image = iso_model(image, 0)
+        if "Volumetric" in plan:
+            image = image * 2 - 1
+            image = vol_model(image, 0)
+            image = image[1] if image is tuple else image
+            image = (image.clamp(-1, 1) + 1) / 2 
+        elif "Projection" in plan:
+            image = proj_model(image, 0)
+            image = image[1] if image is tuple else image
+        elif "Isotropic" in plan:
+            image = iso_model(image, 0)
 
     image = normalize(image.squeeze().cpu().numpy(), 0, 100, clip=True) * 255
     axes = "YX" if not "Volumetric" in plan else "ZYX"
     utility.save_tiff_imagej_compatible('output.tif', image, axes)
     return ['output.tif', "Output Successfully Saved!"]
 
-def bot_streaming(data_image, objective):
+def bot_streaming(data_image, objective, args=None):
     problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for psnr? You can use the tools: Projection, Volumetric, Isotropic_None, Isotropic_2, Isotropic_4, Isotropic_6, SR_None, SR_5, SR_7, SR_9, Denoising_None, Denoising_10, Denoising_20, Denoising_30. Please analyze the image and give the plan. For example, <think> ? </think> <answer> <operation><isotropic3> SR_? Denoising_? </answer>.'
 
     # generate spectrum image
@@ -470,60 +480,136 @@ def bot_streaming(data_image, objective):
     return buffer
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--model-path", type=str, default=None)
-parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
-parser.add_argument("--device", type=str, default="cuda")
-parser.add_argument("--load-8bit", action="store_true")
-parser.add_argument("--load-4bit", action="store_true")
-parser.add_argument("--disable_flash_attention", action="store_true")
-parser.add_argument("--temperature", type=float, default=0)
-parser.add_argument("--repetition-penalty", type=float, default=1.0)
-parser.add_argument("--max-new-tokens", type=int, default=1024)
-args = parser.parse_args()
+def normalize(x, pmin=3, pmax=99.8, axis=None, clip=False, eps=1e-20, dtype=np.float32):
+    """Percentile-based image normalization."""
+    
+    mi = np.percentile(x, pmin, axis=axis, keepdims=True)
+    ma = np.percentile(x, pmax, axis=axis, keepdims=True)
+    # print('minmax: ', mi, ma)
+    return normalize_mi_ma(x, mi, ma, clip=clip, eps=eps, dtype=dtype)
 
-with gr.Blocks(title="FMIRAgents Web Demo") as demo:
 
-    gr.Markdown("# Self-Explained Thinking Agent for Autonomous Microscopy Restoration")
+def normalize_mi_ma(x, mi, ma, clip=False, eps=1e-20, dtype=np.float32):
+    if dtype is not None:
+        x = x.astype(dtype, copy=False)
+        mi = dtype(mi) if np.isscalar(mi) else mi.astype(dtype, copy=False)
+        ma = dtype(ma) if np.isscalar(ma) else ma.astype(dtype, copy=False)
+        eps = dtype(eps)
+    
+    try:
+        import numexpr
+        x = numexpr.evaluate("(x - mi) / ( ma - mi + eps )")
+    except ImportError:
+        x = (x - mi) / (ma - mi + eps)
+    #print('normalize_mi_ma_debug: ', mi, ma-mi)
 
-    gr.Markdown("## Instructions")
-    gr.Markdown("1. Upload a microscopy image in tiff format: The image can be 2D or 3D. Click 'Check Input' to visualize the image.")
-    gr.Markdown("2. Load models of image enhancement and planing: Choose device, quantization, and chop option. Click 'Load Model'.")
-    gr.Markdown("3. Generate a plan for image enhancement: Click 'Generate Plan'.")
-    gr.Markdown("4. Run the plan to enhance the image: Click 'Restore Image'.")
-    gr.Markdown("5. Check the output image: Click 'Check Output' to visualize the enhanced image. Download the output image if needed.")
+    if clip:
+        x = np.clip(x, 0, 1)
+    
+    return x
 
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown("## Upload Image")
-            img_input = gr.File(label="Input File", interactive=True)
-            img_visual = gr.Gallery(label="Input Viusalization", interactive=False)
-            input_message = gr.Textbox(label="Image Information", value="Image not loaded")
-            check_input = gr.Button("Check Input") 
+def calculate_metrics(file1, file2):
+    # Read the TIFF files
+    img1 = imread(file1)
+    img1 = normalize(img1, 0, 100, clip=True)
+    img2 = imread(file2)
+    img2 = normalize(img2, 0, 100, clip=True)
 
-        with gr.Column():
-            gr.Markdown("## Plan Generation")
-            device = gr.Dropdown(label="Device", choices=DEVICES, value="CUDA")
-            quantization = gr.Dropdown(label="Quantization", choices=QUANT, value="float16")
-            chop = gr.Dropdown(label="Chop", choices=['Yes','No'], value="Yes")
-            load_progress = gr.Textbox(label="Model Information", value="Model not loaded")
-            load_btn = gr.Button("Load Model")
-            objective_options = gr.Dropdown(label="Operation", choices=objectives, value="None")
-            plan_message = gr.Textbox(label="Plan Information", value="No plan generated")
-            plan_btn = gr.Button("Generate Plan")
+    # Ensure the images have the same shape
+    if img1.shape != img2.shape:
+        img1 = cv2.resize(img1, (img2.shape[1], img2.shape[0]), interpolation=cv2.INTER_LINEAR)
 
-        with gr.Column():
-            gr.Markdown("## Restore Image")
-            output_file = gr.File(label="Output File", interactive=False)
-            img_output = gr.Gallery(label="Output Visualiztion")
-            output_message = gr.Textbox(label="Output Information", value="Image not loaded")
-            run_btn = gr.Button("Restore Image")
-            display_btn = gr.Button("Check Output")
+    # Calculate PSNR and SSIM
+    psnr_value = psnr(img1, img2, data_range=img2.max() - img2.min())
+    ssim_value = ssim(img1, img2, multichannel=True, data_range=img2.max() - img2.min())
 
-    check_input.click(visualize, inputs=img_input, outputs=[img_visual, input_message], queue=True)
-    display_btn.click(visualize, inputs=output_file, outputs=[img_output, output_message], queue=True)
-    load_btn.click(load_models,inputs=[device, chop, quantization],outputs=load_progress, queue=True)
-    plan_btn.click(bot_streaming, inputs=[img_input, objective_options], outputs=plan_message, queue=True)
-    run_btn.click(run_plan, inputs=[img_input, plan_message], outputs=[output_file, output_message], queue=True)
+    return psnr_value, ssim_value
 
-demo.queue().launch(server_name='0.0.0.0', server_port=8989)
+def process_single_image(img_input, gt_path, save_path, args, objective_options='None'):
+    
+    if args.force_plan is not None:
+        plan_message = args.force_plan
+    else:
+        plan_message = bot_streaming(img_input, objective_options, args=args)
+    output_file, output_message = run_plan(img_input, plan_message)
+
+    # Save the output image
+    image = imread(output_file)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    imsave(save_path, image)
+
+    # Calculate the PSNR and SSIM
+    psnr_value, ssim_value = calculate_metrics(output_file, gt_path)
+    return psnr_value, ssim_value, plan_message
+
+def get_dataset(path, output_path):
+    if not os.path.exists(path):
+        raise ValueError(f"Path {path} does not exist.")
+    
+    if "DeepBacs" in path:
+        # Get the paths for input, ground truth, and save directories
+        input_path = sorted(glob.glob(os.path.join(path, "*", "test", "low_SNR","*.tif")) + glob.glob(os.path.join(path, "*", "test", "WF","*.tif")))
+        gt_path = sorted(glob.glob(os.path.join(path, "*", "test", "high_SNR","*.tif")) + glob.glob(os.path.join(path, "*", "test", "SIM","*.tif")))
+        save_path = [p.replace("low_SNR", "SR").replace('WF','SR').replace(path,output_path) for p in input_path]
+    
+    else:
+        # Get the paths for input, ground truth, and save directories
+        input_path = sorted(glob.glob(os.path.join(path, "*", "LR.tif")))
+        gt_path = sorted(glob.glob(os.path.join(path, "*", "HR.tif")))
+        save_path = [p.replace("LR", "SR").replace(path,output_path) for p in input_path]
+
+    return input_path, gt_path, save_path
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-path", type=str, default=None)
+    parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--load-8bit", action="store_true")
+    parser.add_argument("--load-4bit", action="store_true")
+    parser.add_argument("--disable_flash_attention", action="store_true")
+    parser.add_argument("--temperature", type=float, default=0)
+    parser.add_argument("--repetition-penalty", type=float, default=1.0)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--output-path", type=str, default=None)
+    parser.add_argument("--force-plan", type=str, default=None)
+    args = parser.parse_args()
+
+    # Load the model
+    load_models("CUDA", "Yes", "float16", args=args)
+
+    # Example usage
+    for path in ["Shareloc","DeepBacs"]:
+        input_path, gt_path, save_path = get_dataset(path, args.output_path)
+        print(f"Input Path: {input_path}")
+
+        # Check if the number of input images matches the number of ground truth images
+        if len(input_path) != len(gt_path):
+            raise ValueError("The number of input images and ground truth images must match.")
+        
+        # run the model on each image
+        psnr_values = []
+        ssim_values = []
+        plan_messages = []
+        for i in range(len(input_path)):
+            psnr_value, ssim_value, plan_message = process_single_image(input_path[i], gt_path[i], save_path[i], args)
+            psnr_values.append(psnr_value)
+            ssim_values.append(ssim_value)
+            plan_messages.append(plan_message)
+            print(f"Processed image {i+1}/{len(input_path)}: PSNR={psnr_value:.2f}, SSIM={ssim_value:.4f}")
+
+        # Calculate the average PSNR and SSIM
+        avg_psnr, std_psnr = np.mean(psnr_values), np.std(psnr_values)
+        avg_ssim, std_ssim = np.mean(ssim_values), np.std(ssim_values)
+        print(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}")
+        print(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}")
+
+        # Save the results to a text file
+        result_path = os.path.join(args.output_path, f"results_{path}.txt")
+        with open(result_path, "w") as f:
+            for i in range(len(input_path)):
+                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f} PLAN={plan_messages[i]}\n")
+            f.write(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}\n")
+            f.write(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}\n")
+
+        print(f"Results saved to {result_path}")

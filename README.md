@@ -29,3 +29,13 @@ python app.py --model-path experiment/FMIRAgent
 ```bash
 python benchmark.py --model-path experiment/FMIRAgent --dataset-path dataset/test_split/test_dataset_psnr.hf
 ```
+
+## Benchmark with unseen dataset
+
+1. Download the [datasets](https://zenodo.org/records/15469845/files/unseen_dataset.zip) and unzip it here.
+
+2. Test models
+
+```bash
+python benchmark_unseen.py --model-path experiment/FMIRAgent --output-path unseen_dataset
+```
