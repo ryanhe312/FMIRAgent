@@ -2,9 +2,7 @@
 
 ![example](example.png)
 
-## Web Interface
-
-1. Install Packages
+## Environment
 
 ```bash
 conda env create -f environment.yaml
@@ -12,17 +10,19 @@ conda activate fmiragent
 pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
 ```
 
-2. Download the [models](https://zenodo.org/records/15254620/files/model.zip).
+## Web Interface
 
-3. Run the Web Interface
+1. Download the [models](https://zenodo.org/records/15254620/files/model.zip) and unzip it here. You will get `experiment` folder.
+
+2. Run the Web Interface
 
 ```bash
 python app.py --model-path experiment/FMIRAgent
 ```
 
-## Benchmark
+## Benchmark with our dataset
 
-1. Download the [datasets](https://zenodo.org/records/15254620/files/dataset.zip).
+1. Download the [datasets](https://zenodo.org/records/15254620/files/dataset.zip) and unzip it here. You will get `dataset` folder.
 
 2. Test models
 
@@ -32,7 +32,7 @@ python benchmark.py --model-path experiment/FMIRAgent --dataset-path dataset/tes
 
 ## Benchmark with unseen dataset
 
-1. Download the [datasets](https://zenodo.org/records/15469845/files/unseen_dataset.zip) and unzip it here.
+1. Download the [datasets](https://zenodo.org/records/15469845/files/unseen_dataset.zip) and unzip it here. You will get `Shareloc` and `DeepBacs` folders.
 
 2. Test models
 

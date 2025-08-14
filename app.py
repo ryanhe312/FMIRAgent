@@ -37,7 +37,7 @@ processing_options = {
     "Denoising": ["Denoising_None", "Denoising_10", "Denoising_20", "Denoising_30"]
 }
 
-objectives = ["Projection", "Volumetric", "Isotropic", "None"]
+objectives = ["Projection", "Volumetric", "Isotropic", "SR/Denoise"]
 
 class Args:
     model = 'SwinIR'
@@ -486,18 +486,50 @@ with gr.Blocks(title="FMIRAgents Web Demo") as demo:
 
     gr.Markdown("# Self-Explained Thinking Agent for Autonomous Microscopy Restoration")
 
-    gr.Markdown("## Instructions")
-    gr.Markdown("1. Upload a microscopy image in tiff format: The image can be 2D or 3D. Click 'Check Input' to visualize the image.")
-    gr.Markdown("2. Load models of image enhancement and planing: Choose device, quantization, and chop option. Click 'Load Model'.")
-    gr.Markdown("3. Generate a plan for image enhancement: Click 'Generate Plan'.")
-    gr.Markdown("4. Run the plan to enhance the image: Click 'Restore Image'.")
-    gr.Markdown("5. Check the output image: Click 'Check Output' to visualize the enhanced image. Download the output image if needed.")
+    with gr.Row():
+        with gr.Column():
+
+            gr.Markdown("## How to Use This Demo")
+            gr.Markdown("### Step 1: Upload Your Image")
+            gr.Markdown("• Select a microscopy image file in **TIFF format** (.tif or .tiff)")
+            gr.Markdown("• Supported formats: 2D grayscale images or 3D image stacks")
+            gr.Markdown("• Click **'Check Input'** to preview your uploaded image")
+            
+            gr.Markdown("### Step 2: Configure Processing Settings")
+            gr.Markdown("• **Device**: Choose computational backend (CPU, CUDA, or Parallel CUDA)")
+            gr.Markdown("• **Quantization**: Select precision (float16 for faster processing, float32 for higher quality)")
+            gr.Markdown("• **Chop**: Enable memory-efficient processing for large images (recommended: Yes)")
+            gr.Markdown("• Click **'Load Model'** to initialize the AI models (this may take a few moments)")
+
+        with gr.Column():
+
+            gr.Markdown("### Step 3: Generate Enhancement Plan")
+            gr.Markdown("• **Operation**: Select the primary objective for your image:")
+            gr.Markdown("  - **SR/Denoise**: General enhancement (super-resolution + denoising)")
+            gr.Markdown("  - **Projection**: Light field microscopy projection enhancement")
+            gr.Markdown("  - **Volumetric**: 3D volume reconstruction and enhancement")
+            gr.Markdown("  - **Isotropic**: Convert anisotropic to isotropic resolution")
+            gr.Markdown("• Click **'Generate Plan'** to let the AI analyze your image and create an optimal enhancement strategy")
+    
+        with gr.Column():
+
+            gr.Markdown("### Step 4: Execute Enhancement")
+            gr.Markdown("• Click **'Restore Image'** to apply the generated plan to your image")
+            gr.Markdown("• Processing time varies based on image size and selected operations")
+            
+            gr.Markdown("### Step 5: Review Results")
+            gr.Markdown("• Click **'Check Output'** to preview the enhanced image")
+            gr.Markdown("• Download the enhanced image from the 'Output File' section")
+            gr.Markdown("• The output maintains the same format and bit depth as your input")
+            
+            gr.Markdown("---")
+            gr.Markdown("💡 **Tips**: For best results, ensure your input image has good contrast and is properly focused. Large images may require chop mode for memory efficiency.")
 
     with gr.Row():
         with gr.Column():
             gr.Markdown("## Upload Image")
             img_input = gr.File(label="Input File", interactive=True)
-            img_visual = gr.Gallery(label="Input Viusalization", interactive=False)
+            img_visual = gr.Gallery(label="Input Visualization", interactive=False)
             input_message = gr.Textbox(label="Image Information", value="Image not loaded")
             check_input = gr.Button("Check Input") 
 
@@ -508,14 +540,14 @@ with gr.Blocks(title="FMIRAgents Web Demo") as demo:
             chop = gr.Dropdown(label="Chop", choices=['Yes','No'], value="Yes")
             load_progress = gr.Textbox(label="Model Information", value="Model not loaded")
             load_btn = gr.Button("Load Model")
-            objective_options = gr.Dropdown(label="Operation", choices=objectives, value="None")
+            objective_options = gr.Dropdown(label="Operation", choices=objectives, value="SR/Denoise")
             plan_message = gr.Textbox(label="Plan Information", value="No plan generated")
             plan_btn = gr.Button("Generate Plan")
 
         with gr.Column():
             gr.Markdown("## Restore Image")
             output_file = gr.File(label="Output File", interactive=False)
-            img_output = gr.Gallery(label="Output Visualiztion")
+            img_output = gr.Gallery(label="Output Visualization")
             output_message = gr.Textbox(label="Output Information", value="Image not loaded")
             run_btn = gr.Button("Restore Image")
             display_btn = gr.Button("Check Output")
