@@ -1,23 +1,13 @@
-import cv2
-import glob
-import numpy as np
-
-from skimage.metrics import peak_signal_noise_ratio as psnr
-from skimage.metrics import structural_similarity as ssim
-from tifffile import imread
-
 import os
 import cv2
-import argparse
 import torch
 import utility
-import model
 import numpy as np
 import gradio as gr
 import numpy as np
+import model
+import random
 
-from tqdm import tqdm
-from threading import Thread
 from functools import partial
 from div2k import normalize
 from transformers import TextIteratorStreamer
@@ -25,6 +15,10 @@ from qwen_vl_utils import process_vision_info
 from tifffile import imread, imwrite as imsave
 from qwen2.src.utils import load_pretrained_model, get_model_name_from_path, disable_torch_init
 
+import warnings
+warnings.filterwarnings("ignore")
+
+# define global constants
 DEVICES = ['CPU','CUDA','Paralleled CUDA']
 QUANT = ['float32','float16',]
 TASKS = ['SR_5','SR_7','SR_9','Isotropic_2','Isotropic_4','Isotropic_6','Projection','Denoising_10','Denoising_20','Denoising_30','Volumetric']
@@ -45,8 +39,9 @@ processing_options = {
     "Denoising": ["Denoising_None", "Denoising_10", "Denoising_20", "Denoising_30"]
 }
 
-objectives = ["Projection", "Volumetric", "Isotropic", "None"]
+objectives = ["Projection", "Volumetric", "Isotropic", "SR/Denoise"]
 
+# define unifmir args
 class Args:
     model = 'SwinIR'
     test_only = True
@@ -242,6 +237,30 @@ def visualize(img_input, progress=gr.Progress()):
         gr.Error("Image must be 2 or 3 dimensional!")
         return None
     
+
+def normalize(x, pmin=3, pmax=99.8, axis=None, clip=False, eps=1e-20, dtype=np.float32):
+    """Percentile-based image normalization."""
+    
+    mi = np.percentile(x, pmin, axis=axis, keepdims=True)
+    ma = np.percentile(x, pmax, axis=axis, keepdims=True)
+    # print('minmax: ', mi, ma)
+    return normalize_mi_ma(x, mi, ma, clip=clip, eps=eps, dtype=dtype)
+
+
+def normalize_mi_ma(x, mi, ma, clip=False, eps=1e-20, dtype=np.float32):
+    if dtype is not None:
+        x = x.astype(dtype, copy=False)
+        mi = dtype(mi) if np.isscalar(mi) else mi.astype(dtype, copy=False)
+        ma = dtype(ma) if np.isscalar(ma) else ma.astype(dtype, copy=False)
+        eps = dtype(eps)
+    
+    x = (x - mi) / (ma - mi + eps)
+
+    if clip:
+        x = np.clip(x, 0, 1)
+    
+    return x
+    
 def rearrange3d_fn(image):
     """ re-arrange image of shape[depth, height, width] into shape[height, width, depth]
     """
@@ -315,7 +334,7 @@ def lf_extract_fn(lf2d, n_num=11, mode='toChannel', padding=False):
 
     return lf_extra
 
-def load_models(device, chop, quantization, args=None, progress=gr.Progress()):
+def load_models(device, chop, quantization, args, progress=gr.Progress()):
     global sr_models, noise_models, proj_models, iso_models, vol_models, processor, language_model
 
     load_fn = partial(load_model, device=device, chop=chop, quantization=quantization)
@@ -333,28 +352,25 @@ def load_models(device, chop, quantization, args=None, progress=gr.Progress()):
     # load language model
     disable_torch_init()
     model_name = get_model_name_from_path(args.model_path)
-    processor, language_model = load_pretrained_model(model_base = args.model_base, model_path = args.model_path, 
-                                                device_map=args.device, model_name=model_name, 
-                                                load_4bit=args.load_4bit, load_8bit=args.load_8bit,
-                                                device=args.device, use_flash_attn=not args.disable_flash_attention
-    )
+    processor, language_model = load_pretrained_model(model_base = args.model_base, model_path = args.model_path, model_name=model_name, device=args.device)
 
     return f"Models loaded! device={device}, chop={chop}, quantization={quantization}"
+
 
 @torch.no_grad()
 def run_plan(data_image, plan, progress=gr.Progress()):
     try: 
         plan = plan.split("<answer>")[1].split("</answer>")[0].strip()
     except:
-        pass
+        plan = "SR_None Denoising_None"
 
     image = imread(data_image)
-    print(image.shape, image.max(), image.min())
+    # print(image.shape, image.max(), image.min())
     image = normalize(image, 0, 100, clip=True)
     lrs = torch.from_numpy(np.ascontiguousarray(image)).float().unsqueeze(0).cuda()
 
     image = lrs.clone()
-    print(f"Plan: {plan}")
+    # print(f"Plan: {plan}")
 
     if plan:
         if "Volumetric" in plan:
@@ -376,8 +392,8 @@ def run_plan(data_image, plan, progress=gr.Progress()):
             image = image.unsqueeze(0)
 
         out = []
-        print(image.shape, image.max(), image.min())
-        for i in tqdm(range(0,image.shape[1])):
+        # print(image.shape, image.max(), image.min())
+        for i in range(0,image.shape[1]):
             out.append(sr_model(noise_model(image[:, i:i+1], 0).clamp(0, 1), 0).clamp(0, 1))
         image = torch.cat(out, 1)
 
@@ -392,30 +408,47 @@ def run_plan(data_image, plan, progress=gr.Progress()):
         elif "Isotropic" in plan:
             image = iso_model(image, 0)
 
-    image = normalize(image.squeeze().cpu().numpy(), 0, 100, clip=True) * 255
+    image = image.squeeze().cpu().numpy().clip(0,1)
     axes = "YX" if not "Volumetric" in plan else "ZYX"
     utility.save_tiff_imagej_compatible('output.tif', image, axes)
     return ['output.tif', "Output Successfully Saved!"]
 
-def bot_streaming(data_image, objective, args=None):
-    problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for psnr? You can use the tools: Projection, Volumetric, Isotropic_None, Isotropic_2, Isotropic_4, Isotropic_6, SR_None, SR_5, SR_7, SR_9, Denoising_None, Denoising_10, Denoising_20, Denoising_30. Please analyze the image and give the plan. For example, <think> ? </think> <answer> <operation><isotropic3> SR_? Denoising_? </answer>.'
+def set_seed(seed: int):
+    """
+    Sets the random seed for Python, NumPy, and PyTorch for reproducibility.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    # If you are using a GPU
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+        # The two lines below are crucial for ensuring deterministic behavior on a GPU.
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
-    # generate spectrum image
-    image = imread(data_image)
-    image = normalize(image, 0, 100, clip=True)
-    if len(image.shape) == 3:
-        image = image[0]
-    if image.shape[0] > 128 and image.shape[1] > 128:
-        # random crop
-        x = np.random.randint(0, image.shape[0]-128)
-        y = np.random.randint(0, image.shape[1]-128)
-        image = image[x:x+128, y:y+128]
-    else:
-        image = cv2.resize(image, (128, 128))
-    dft = cv2.dft(np.float32(image), flags=cv2.DFT_COMPLEX_OUTPUT)
-    dft_shift = np.fft.fftshift(dft)
-    magnitude_spectrum = 20 * np.log(cv2.magnitude(dft_shift[:,:,0], dft_shift[:,:,1]) + 1)
-    cv2.imwrite(f"{data_image}_spectrum.png", magnitude_spectrum)
+def bot_streaming(data_image, objective, args, progress=gr.Progress()):
+    problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for <metric>? You can use the tools: <operation><isotropic1>SR_(None/5/7/9) Denoising_(None/10/20/30). Please analyze the image and give the plan. For example, "<think> The spectrum shows ? which indicates that the image has <isotropic2>a blur kernel of ? and a noise of level ?. </think> <answer> <operation><isotropic3>SR_? Denoising_? </answer>".'
+
+    # check if spectrum image exists
+    if not os.path.exists(f"{data_image}_spectrum.png"):
+        # generate spectrum image
+        image = imread(data_image)
+        image = normalize(image, 0, 100, clip=True)
+        if len(image.shape) == 3:
+            image = image[0]
+        if image.shape[0] > 128 and image.shape[1] > 128:
+            # center crop
+            x = image.shape[0]//2 - 64
+            y = image.shape[1]//2 - 64
+            image = image[x:x+128, y:y+128]
+        else:
+            image = cv2.resize(image, (128, 128))
+        dft = cv2.dft(np.float32(image), flags=cv2.DFT_COMPLEX_OUTPUT)
+        dft_shift = np.fft.fftshift(dft)
+        magnitude_spectrum = 20 * np.log(cv2.magnitude(dft_shift[:,:,0], dft_shift[:,:,1]) + 1)
+        cv2.imwrite(f"{data_image}_spectrum.png", magnitude_spectrum)
 
     # generate conversation
     operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
@@ -425,8 +458,9 @@ def bot_streaming(data_image, objective, args=None):
     problem = problem.replace("<isotropic2>", "a resolution ratio of ?, " if "Isotropic" in objective else "")
     problem = problem.replace("<isotropic3>", "Isotropic_? " if "Isotropic" in objective else "")
 
+    QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
     message = {
-        "text": problem,
+        "text": QUESTION_TEMPLATE.format(Question=problem),
         "files": [f"{data_image}_spectrum.png"]
     }
 
@@ -469,147 +503,10 @@ def bot_streaming(data_image, objective, args=None):
     streamer = TextIteratorStreamer(processor.tokenizer, **{"skip_special_tokens": True, "skip_prompt": True, 'clean_up_tokenization_spaces':False,}) 
     generation_kwargs = dict(inputs, streamer=streamer, eos_token_id=processor.tokenizer.eos_token_id, **generation_args)
 
-    thread = Thread(target=language_model.generate, kwargs=generation_kwargs)
-    thread.start()
+    language_model.generate(**generation_kwargs)
 
     buffer = ""
     for new_text in streamer:
         buffer += new_text
-    
-    thread.join()
+
     return buffer
-
-
-def normalize(x, pmin=3, pmax=99.8, axis=None, clip=False, eps=1e-20, dtype=np.float32):
-    """Percentile-based image normalization."""
-    
-    mi = np.percentile(x, pmin, axis=axis, keepdims=True)
-    ma = np.percentile(x, pmax, axis=axis, keepdims=True)
-    # print('minmax: ', mi, ma)
-    return normalize_mi_ma(x, mi, ma, clip=clip, eps=eps, dtype=dtype)
-
-
-def normalize_mi_ma(x, mi, ma, clip=False, eps=1e-20, dtype=np.float32):
-    if dtype is not None:
-        x = x.astype(dtype, copy=False)
-        mi = dtype(mi) if np.isscalar(mi) else mi.astype(dtype, copy=False)
-        ma = dtype(ma) if np.isscalar(ma) else ma.astype(dtype, copy=False)
-        eps = dtype(eps)
-    
-    try:
-        import numexpr
-        x = numexpr.evaluate("(x - mi) / ( ma - mi + eps )")
-    except ImportError:
-        x = (x - mi) / (ma - mi + eps)
-    #print('normalize_mi_ma_debug: ', mi, ma-mi)
-
-    if clip:
-        x = np.clip(x, 0, 1)
-    
-    return x
-
-def calculate_metrics(file1, file2):
-    # Read the TIFF files
-    img1 = imread(file1)
-    img1 = normalize(img1, 0, 100, clip=True)
-    img2 = imread(file2)
-    img2 = normalize(img2, 0, 100, clip=True)
-
-    # Ensure the images have the same shape
-    if img1.shape != img2.shape:
-        img1 = cv2.resize(img1, (img2.shape[1], img2.shape[0]), interpolation=cv2.INTER_LINEAR)
-
-    # Calculate PSNR and SSIM
-    psnr_value = psnr(img1, img2, data_range=img2.max() - img2.min())
-    ssim_value = ssim(img1, img2, multichannel=True, data_range=img2.max() - img2.min())
-
-    return psnr_value, ssim_value
-
-def process_single_image(img_input, gt_path, save_path, args, objective_options='None'):
-    
-    if args.force_plan is not None:
-        plan_message = args.force_plan
-    else:
-        plan_message = bot_streaming(img_input, objective_options, args=args)
-    output_file, output_message = run_plan(img_input, plan_message)
-
-    # Save the output image
-    image = imread(output_file)
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    imsave(save_path, image)
-
-    # Calculate the PSNR and SSIM
-    psnr_value, ssim_value = calculate_metrics(output_file, gt_path)
-    return psnr_value, ssim_value, plan_message
-
-def get_dataset(path, output_path):
-    if not os.path.exists(path):
-        raise ValueError(f"Path {path} does not exist.")
-    
-    if "DeepBacs" in path:
-        # Get the paths for input, ground truth, and save directories
-        input_path = sorted(glob.glob(os.path.join(path, "*", "test", "low_SNR","*.tif")) + glob.glob(os.path.join(path, "*", "test", "WF","*.tif")))
-        gt_path = sorted(glob.glob(os.path.join(path, "*", "test", "high_SNR","*.tif")) + glob.glob(os.path.join(path, "*", "test", "SIM","*.tif")))
-        save_path = [p.replace("low_SNR", "SR").replace('WF','SR').replace(path,output_path) for p in input_path]
-    
-    else:
-        # Get the paths for input, ground truth, and save directories
-        input_path = sorted(glob.glob(os.path.join(path, "*", "LR.tif")))
-        gt_path = sorted(glob.glob(os.path.join(path, "*", "HR.tif")))
-        save_path = [p.replace("LR", "SR").replace(path,output_path) for p in input_path]
-
-    return input_path, gt_path, save_path
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default=None)
-    parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--load-8bit", action="store_true")
-    parser.add_argument("--load-4bit", action="store_true")
-    parser.add_argument("--disable_flash_attention", action="store_true")
-    parser.add_argument("--temperature", type=float, default=0)
-    parser.add_argument("--repetition-penalty", type=float, default=1.0)
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
-    parser.add_argument("--output-path", type=str, default=None)
-    parser.add_argument("--force-plan", type=str, default=None)
-    args = parser.parse_args()
-
-    # Load the model
-    load_models("CUDA", "Yes", "float16", args=args)
-
-    # Example usage
-    for path in ["Shareloc","DeepBacs"]:
-        input_path, gt_path, save_path = get_dataset(path, args.output_path)
-        print(f"Input Path: {input_path}")
-
-        # Check if the number of input images matches the number of ground truth images
-        if len(input_path) != len(gt_path):
-            raise ValueError("The number of input images and ground truth images must match.")
-        
-        # run the model on each image
-        psnr_values = []
-        ssim_values = []
-        plan_messages = []
-        for i in range(len(input_path)):
-            psnr_value, ssim_value, plan_message = process_single_image(input_path[i], gt_path[i], save_path[i], args)
-            psnr_values.append(psnr_value)
-            ssim_values.append(ssim_value)
-            plan_messages.append(plan_message)
-            print(f"Processed image {i+1}/{len(input_path)}: PSNR={psnr_value:.2f}, SSIM={ssim_value:.4f}")
-
-        # Calculate the average PSNR and SSIM
-        avg_psnr, std_psnr = np.mean(psnr_values), np.std(psnr_values)
-        avg_ssim, std_ssim = np.mean(ssim_values), np.std(ssim_values)
-        print(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}")
-        print(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}")
-
-        # Save the results to a text file
-        result_path = os.path.join(args.output_path, f"results_{path}.txt")
-        with open(result_path, "w") as f:
-            for i in range(len(input_path)):
-                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f} PLAN={plan_messages[i]}\n")
-            f.write(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}\n")
-            f.write(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}\n")
-
-        print(f"Results saved to {result_path}")

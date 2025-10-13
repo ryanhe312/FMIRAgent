@@ -27,7 +27,7 @@ python app.py --model-path experiment/FMIRAgent
 2. Test models
 
 ```bash
-python benchmark.py --model-path experiment/FMIRAgent --dataset-path dataset/test_split/test_dataset_psnr.hf
+python benchmark.py --model-path experiment/FMIRAgent --output-path our_dataset
 ```
 
 ## Benchmark with unseen dataset
@@ -37,5 +37,5 @@ python benchmark.py --model-path experiment/FMIRAgent --dataset-path dataset/tes
 2. Test models
 
 ```bash
-python benchmark_unseen.py --model-path experiment/FMIRAgent --output-path unseen_dataset
+python benchmark.py --model-path experiment/FMIRAgent --output-path unseen_dataset --unseen-dataset
 ```

@@ -144,7 +144,7 @@ class swinir(nn.Module):
     
     def half(self):
         self.precision = torch.half
-        print('half')
+        # print('half')
         super().half()
     
     def forward_features(self, x):
@@ -359,7 +359,7 @@ class swinir2dto3d(nn.Module):
     
     def half(self):
         self.precision = torch.half
-        print('half')
+        # print('half')
         super().half()
     
     def forward(self, x):

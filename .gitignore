@@ -9,6 +9,10 @@ experiment/
 dataset
 output
 wandb
+DeepBacs
+Shareloc
+unseen_dataset
+our_dataset
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

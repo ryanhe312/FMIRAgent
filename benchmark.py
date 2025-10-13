@@ -1,261 +1,143 @@
-import argparse
-from threading import Thread
-import gradio as gr
-from PIL import Image
-from qwen2.src.utils import load_pretrained_model, get_model_name_from_path, disable_torch_init
-from transformers import TextIteratorStreamer
-from functools import partial
-import warnings
-import json
 import os
-import re
-import time
-import random
-import datasets
-from tqdm import tqdm
+import cv2
+import glob
+import argparse
+import tqdm
 import numpy as np
-from qwen_vl_utils import process_vision_info
 
-SYSTEM_PROMPT = (
-    "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
-    "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
-    "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
-    "<think> reasoning process here </think><answer> answer here </answer>"
-)
+from tifffile import imread, imwrite as imsave
+from piq import psnr, ssim
 
-warnings.filterwarnings("ignore")
+from function import *
 
-def is_video_file(filename):
-    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.mpeg']
-    return any(filename.lower().endswith(ext) for ext in video_extensions)
+# seed everything
+set_seed(42)
 
-def bot_streaming(message, history, generation_args):
-    # Initialize variables
-    images = []
-    videos = []
+def calculate_metrics(file1, file2):
+    # Read the TIFF files
+    img1 = imread(file1)
+    img2 = normalize(imread(file2),0,100)
 
-    if message["files"]:
-        for file_item in message["files"]:
-            if isinstance(file_item, dict):
-                file_path = file_item["path"]
-            else:
-                file_path = file_item
-            if isinstance(file_path, str) and is_video_file(file_path):
-                videos.append(file_path)
-            else:
-                images.append(file_path)
+    # Ensure the images have the same shape
+    if img1.shape != img2.shape:
+        img1 = cv2.resize(img1, (img2.shape[1], img2.shape[0]), interpolation=cv2.INTER_LINEAR)
 
-    conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for user_turn, assistant_turn in history:
-        user_content = []
-        if isinstance(user_turn, tuple):
-            file_paths = user_turn[0]
-            user_text = user_turn[1]
-            if not isinstance(file_paths, list):
-                file_paths = [file_paths]
-            for file_path in file_paths:
-                if isinstance(file_path, str) and is_video_file(file_path):
-                    user_content.append({"type": "video", "video": file_path, "fps":1.0})
-                else:
-                    user_content.append({"type": "image", "image": file_path})
-            if user_text:
-                user_content.append({"type": "text", "text": user_text})
-        else:
-            user_content.append({"type": "text", "text": user_turn})
-        conversation.append({"role": "user", "content": user_content})
+    # Calculate PSNR and SSIM
+    img1 = torch.tensor(img1).cuda()
+    img2 = torch.tensor(img2).cuda()
+    if img1.ndim == 2:
+        img1 = img1.unsqueeze(0).unsqueeze(0)
+        img2 = img2.unsqueeze(0).unsqueeze(0)
+    elif img1.ndim == 3:
+        img1 = img1.permute(2,0,1).unsqueeze(0)
+        img2 = img2.permute(2,0,1).unsqueeze(0)
 
-        if assistant_turn is not None:
-            assistant_content = [{"type": "text", "text": assistant_turn}]
-            conversation.append({"role": "assistant", "content": assistant_content})
+    psnr_value = psnr(img1, img2).item()
+    ssim_value = ssim(img1, img2).item()
 
-    user_content = []
-    for image in images:
-        user_content.append({"type": "image", "image": image})
-    for video in videos:
-        user_content.append({"type": "video", "video": video, "fps":1.0})
-    user_text = message['text']
-    if user_text:
-        user_content.append({"type": "text", "text": user_text})
-    conversation.append({"role": "user", "content": user_content})
+    return psnr_value, ssim_value
 
-    prompt = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
-    image_inputs, video_inputs = process_vision_info(conversation)
+def process_single_image(img_input, gt_path, save_path, args, objective_options='None'):
     
-    inputs = processor(text=[prompt], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt").to(device) 
+    if args.force_plan is not None:
+        plan_message = args.force_plan
+    else:
+        plan_message = bot_streaming(img_input, objective_options, args=args)
+    output_file, _ = run_plan(img_input, plan_message)
 
-    streamer = TextIteratorStreamer(processor.tokenizer, **{"skip_special_tokens": True, "skip_prompt": True, 'clean_up_tokenization_spaces':False,}) 
-    generation_kwargs = dict(inputs, streamer=streamer, eos_token_id=processor.tokenizer.eos_token_id, **generation_args)
+    # Save the output image
+    image = imread(output_file)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    # print(f"Saving restored image to {save_path}")
+    imsave(save_path, image)
 
-    thread = Thread(target=model.generate, kwargs=generation_kwargs)
-    thread.start()
+    # Calculate the PSNR and SSIM
+    psnr_value, ssim_value = calculate_metrics(output_file, gt_path)
+    return psnr_value, ssim_value, plan_message
 
-    buffer = ""
-    for new_text in streamer:
-        buffer += new_text
+def get_dataset(path, output_path,name):
+    if not os.path.exists(path):
+        raise ValueError(f"Path {path} does not exist.")
     
-    thread.join()
-    return buffer
-
-def main(args):
-
-    global processor, model, device
-
-    device = args.device
+    if name == "DeepBacs":
+        # Get the paths for input, ground truth, and save directories
+        input_path = sorted(glob.glob(os.path.join(path, "*", "test", "low_SNR","*.tif")) + glob.glob(os.path.join(path, "*", "test", "WF","*.tif")))
+        gt_path = sorted(glob.glob(os.path.join(path, "*", "test", "high_SNR","*.tif")) + glob.glob(os.path.join(path, "*", "test", "SIM","*.tif")))
+        save_path = [p.replace("low_SNR", "SR").replace('WF','SR').replace(path,os.path.join(output_path,name)) for p in input_path]
     
-    disable_torch_init()
+    elif name == "Shareloc":
+        # Get the paths for input, ground truth, and save directories
+        input_path = sorted(glob.glob(os.path.join(path, "*", "LR.tif")))
+        gt_path = sorted(glob.glob(os.path.join(path, "*", "HR.tif")))
+        save_path = [p.replace("LR", "SR").replace(path,os.path.join(output_path,name)) for p in input_path]
 
-    use_flash_attn = True
-    
-    model_name = get_model_name_from_path(args.model_path)
-    
-    if args.disable_flash_attention:
-        use_flash_attn = False
+    else:
+        # Get the paths for input, ground truth, and save directories
+        input_path = sorted(glob.glob(os.path.join(path, "000000*.tif")))
+        gt_path = sorted(glob.glob(os.path.join(path, "HR000000*.tif")))
+        save_path = [p.replace("HR", "SR").replace(path,os.path.join(output_path,name)) for p in gt_path]
 
-    processor, model = load_pretrained_model(model_base = args.model_base, model_path = args.model_path, 
-                                                device_map=args.device, model_name=model_name, 
-                                                load_4bit=args.load_4bit, load_8bit=args.load_8bit,
-                                                device=args.device, use_flash_attn=use_flash_attn
-    )
-    
-    generation_args = {
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "do_sample": True if args.temperature > 0 else False,
-        "repetition_penalty": args.repetition_penalty,
-    }
-
-    dataset = datasets.load_from_disk(args.dataset_path)
-    ref_dataset = json.load(open(args.dataset_path.replace('hf','json'), "r"))
-
-    QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
-
-    metrics = {
-        "psnr": [],
-        "ssim": [],
-        "lpips": [],
-        "dists": [],
-        "type": [],
-        "plan": [],
-        "path": [],
-        "response": [],
-        "nrmse": []
-    }
-
-    invalid_plans = 0
-    for example, ref in tqdm(list(zip(dataset,ref_dataset))):
-        data_image = example["image"]
-        data_conversations = QUESTION_TEMPLATE.format(Question=example["problem"])
-        message = {
-            "text": data_conversations,
-            "files": data_image if isinstance(data_image, list) else [data_image]
-        }
-        content = bot_streaming(message, [], generation_args)
-        metrics["response"].append(content)
-        
-        try: 
-            plan = content.split("<answer>")[1].split("</answer>")[0].strip().replace("  ", " ")
-        except:
-            plan = content
-
-        metric_results = "plans"+os.path.basename(ref["image"][0]).split(".")[0]+".json"
-        metric_results = os.path.join(os.path.dirname(ref["image"][0]), metric_results)
-        metric_results = json.load(open(metric_results, "r"))
-
-        if "origin_plan" in metric_results.keys():
-            metric_results.pop("origin_plan")
-
-        if plan in list(metric_results.keys()):
-            metrics["type"].append(3 if "Volumetric" in plan else (2 if "Projection" in plan else (1 if "Isotropic" in plan else 0)))
-
-            results = metric_results[plan]
-            for metric in results:
-                metrics[metric].append(results[metric])
-                if metric == "psnr":
-                    nrmse = 1 / 10 ** (results[metric] / 20)
-                    metrics["nrmse"].append(nrmse)
-
-            metrics["plan"].append(content.replace("\n"," "))
-            metrics["path"].append(ref["image"][0])
-        elif "Isotropic_None "+ plan in list(metric_results.keys()):
-            metrics["type"].append(1)
-
-            results = metric_results["Isotropic_None "+ plan]
-            for metric in results:
-                metrics[metric].append(results[metric])
-                if metric == "psnr":
-                    nrmse = 1 / 10 ** (results[metric] / 20)
-                    metrics["nrmse"].append(nrmse)
-
-            metrics["plan"].append(content.replace("\n"," "))
-            metrics["path"].append(ref["image"][0])
-        elif "Projection "+ plan in list(metric_results.keys()):
-            metrics["type"].append(2)
-
-            results = metric_results["Projection "+ plan]
-            for metric in results:
-                metrics[metric].append(results[metric])
-                if metric == "psnr":
-                    nrmse = 1 / 10 ** (results[metric] / 20)
-                    metrics["nrmse"].append(nrmse)
-
-            metrics["plan"].append(content.replace("\n"," "))
-            metrics["path"].append(ref["image"][0])
-        elif "Volumetric "+ plan in list(metric_results.keys()):
-            metrics["type"].append(3)
-
-            results = metric_results["Volumetric "+ plan]
-            for metric in results:
-                metrics[metric].append(results[metric])
-                if metric == "psnr":
-                    nrmse = 1 / 10 ** (results[metric] / 20)
-                    metrics["nrmse"].append(nrmse)
-
-            metrics["plan"].append(content.replace("\n"," "))
-            metrics["path"].append(ref["image"][0])
-        else:
-            invalid_plans += 1
-
-    print("Invalid plans: ", invalid_plans, "/", len(dataset))
-    return metrics
+    return input_path, gt_path, save_path
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset-path", type=str, default=None)
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--load-8bit", action="store_true")
-    parser.add_argument("--load-4bit", action="store_true")
-    parser.add_argument("--disable_flash_attention", action="store_true")
-    parser.add_argument("--temperature", type=float, default=0)
+    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--output-path", type=str, default="metrics.csv")
-    parser.add_argument("--random", type=int, default=None)
+    parser.add_argument("--output-path", type=str, default=None)
+    parser.add_argument("--force-plan", type=str, default=None)
+    parser.add_argument("--unseen-dataset", action="store_true")
     args = parser.parse_args()
-    metrics = main(args)
 
-    f = open(args.output_path, "w")
-    f_std = open(args.output_path.replace(".csv", ".std.csv"), "w")
-    print("Type, Num, PSNR, SSIM, LPIPS, DISTS, NRMSE", file=f)
-    print("Type, Num, PSNR, SSIM, LPIPS, DISTS, NRMSE", file=f_std)
+    # Load the model
+    load_models("CUDA", "Yes", "float16", args=args)
 
-    print(f'Total, 0, {sum(metrics["psnr"])/len(metrics["psnr"]):.2f}, {sum(metrics["ssim"])/len(metrics["ssim"]):.2f}, {sum(metrics["lpips"])/len(metrics["lpips"]):.4f}, {sum(metrics["dists"])/len(metrics["dists"]):.4f}, {sum(metrics["nrmse"])/len(metrics["nrmse"]):.4f}', file=f)
-    print(f"Total, 0, {np.std(metrics['psnr']):.2f}, {np.std(metrics['ssim']):.2f}, {np.std(metrics['lpips']):.4f}, {np.std(metrics['dists']):.4f}, {np.std(metrics['nrmse']):.4f}", file=f_std)
+    # Set the paths for datasets
+    if not args.unseen_dataset:
+        paths = ["dataset/test/DIV2K_Agents_0314",'dataset/test/Flouresceneiso_Agents_New','dataset/test/Flouresceneproj_Agents_New','dataset/test/FlouresceneVCD_Agents_New']
+        names = ["Normal","Isotropic","Projection","Volumetric"]
+    else:
+        paths = ["Shareloc","DeepBacs"]
+        names = ["Shareloc","DeepBacs"]
 
-    for type in range(4):
-        psnr_per_type = [metrics["psnr"][i] for i in range(len(metrics["type"])) if metrics["type"][i] == type]
-        ssim_per_type = [metrics["ssim"][i] for i in range(len(metrics["type"])) if metrics["type"][i] == type]
-        lpips_per_type = [metrics["lpips"][i] for i in range(len(metrics["type"])) if metrics["type"][i] == type]
-        dists_per_type = [metrics["dists"][i] for i in range(len(metrics["type"])) if metrics["type"][i] == type]
-        nrmse_per_type = [metrics["nrmse"][i] for i in range(len(metrics["type"])) if metrics["type"][i] == type]
+    # Iterate over each dataset
+    for path, name in zip(paths, names):
+        input_path, gt_path, save_path = get_dataset(path, args.output_path, name)
+        print(f"Input Path: {input_path}")
 
-        # calculate average
-        print(f"{type}, {metrics['type'].count(type)}, {sum(psnr_per_type)/len(psnr_per_type):.2f}, {sum(ssim_per_type)/len(ssim_per_type):.2f}, {sum(lpips_per_type)/len(lpips_per_type):.4f}, {sum(dists_per_type)/len(dists_per_type):.4f}, {sum(nrmse_per_type)/len(nrmse_per_type):.4f}", file=f)
+        # Check if the number of input images matches the number of ground truth images
+        if len(input_path) != len(gt_path):
+            raise ValueError("The number of input images and ground truth images must match.")
+        
+        # run the model on each image
+        psnr_values = []
+        ssim_values = []
+        plan_messages = []
+        pbar = tqdm.tqdm(total=len(input_path), desc=f"Processing {name} Dataset")
+        for i in range(len(input_path)):
+            psnr_value, ssim_value, plan_message = process_single_image(input_path[i], gt_path[i], save_path[i], args, objective_options=name)
+            psnr_values.append(psnr_value)
+            ssim_values.append(ssim_value)
+            plan_messages.append(plan_message)
 
-        # calculate standard deviation
-        print(f"{type}, {metrics['type'].count(type)}, {np.std(psnr_per_type):.2f}, {np.std(ssim_per_type):.2f}, {np.std(lpips_per_type):.4f}, {np.std(dists_per_type):.4f}, {np.std(nrmse_per_type):.4f}", file=f_std)
+            pbar.update(1)
+            pbar.set_postfix({"PSNR": f"{psnr_value:.2f}", "SSIM": f"{ssim_value:.4f}"})
 
-    f.close()
-    f_std.close()
+        # Calculate the average PSNR and SSIM
+        avg_psnr, std_psnr = np.mean(psnr_values), np.std(psnr_values)
+        avg_ssim, std_ssim = np.mean(ssim_values), np.std(ssim_values)
+        print(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}")
+        print(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}")
+
+        # Save the results to a text file
+        result_path = os.path.join(args.output_path, f"results_{name}.txt")
+        with open(result_path, "w") as f:
+            for i in range(len(input_path)):
+                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f} PLAN={plan_messages[i]}\n")
+            f.write(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}\n")
+            f.write(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}\n")
+
+        print(f"Results saved to {result_path}")

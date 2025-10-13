@@ -8,7 +8,7 @@ import model.swinir as module
 class Model(nn.Module):
     def __init__(self, args, ckp):
         super(Model, self).__init__()
-        print('Making model...')
+        # print('Making model...')
 
         self.scale = args.scale[0]
         self.idx_scale = 0
