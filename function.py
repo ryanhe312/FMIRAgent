@@ -353,6 +353,7 @@ def load_models(device, chop, quantization, args, progress=gr.Progress()):
     disable_torch_init()
     model_name = get_model_name_from_path(args.model_path)
     processor, language_model = load_pretrained_model(model_base = args.model_base, model_path = args.model_path, model_name=model_name, device=args.device)
+    language_model = torch.compile(language_model)
 
     return f"Models loaded! device={device}, chop={chop}, quantization={quantization}"
 
@@ -360,7 +361,7 @@ def load_models(device, chop, quantization, args, progress=gr.Progress()):
 @torch.no_grad()
 def run_plan(data_image, plan, progress=gr.Progress()):
     try: 
-        plan = plan.split("<answer>")[1].split("</answer>")[0].strip()
+        plan = plan.split("<answer>")[-1].split("</answer>")[0].strip()
     except:
         plan = "SR_None Denoising_None"
 
@@ -391,11 +392,10 @@ def run_plan(data_image, plan, progress=gr.Progress()):
             noise_model = noise_models[plan.split()[1]]
             image = image.unsqueeze(0)
 
-        out = []
-        # print(image.shape, image.max(), image.min())
-        for i in range(0,image.shape[1]):
-            out.append(sr_model(noise_model(image[:, i:i+1], 0).clamp(0, 1), 0).clamp(0, 1))
-        image = torch.cat(out, 1)
+        # 1chw to c1hw
+        image = image.permute(1,0,2,3).contiguous()
+        image = sr_model(noise_model(image, 0).clamp(0, 1), 0).clamp(0, 1)
+        image = image.permute(1,0,2,3).contiguous()
 
         if "Volumetric" in plan:
             image = image * 2 - 1
@@ -424,89 +424,92 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
-        # The two lines below are crucial for ensuring deterministic behavior on a GPU.
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
-def bot_streaming(data_image, objective, args, progress=gr.Progress()):
+def bot_streaming(data_images, objective, args, progress=gr.Progress()):
     problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for <metric>? You can use the tools: <operation><isotropic1>SR_(None/5/7/9) Denoising_(None/10/20/30). Please analyze the image and give the plan. For example, "<think> The spectrum shows ? which indicates that the image has <isotropic2>a blur kernel of ? and a noise of level ?. </think> <answer> <operation><isotropic3>SR_? Denoising_? </answer>".'
 
-    # check if spectrum image exists
-    if not os.path.exists(f"{data_image}_spectrum.png"):
-        # generate spectrum image
-        image = imread(data_image)
-        image = normalize(image, 0, 100, clip=True)
-        if len(image.shape) == 3:
-            image = image[0]
-        if image.shape[0] > 128 and image.shape[1] > 128:
-            # center crop
-            x = image.shape[0]//2 - 64
-            y = image.shape[1]//2 - 64
-            image = image[x:x+128, y:y+128]
-        else:
-            image = cv2.resize(image, (128, 128))
-        dft = cv2.dft(np.float32(image), flags=cv2.DFT_COMPLEX_OUTPUT)
-        dft_shift = np.fft.fftshift(dft)
-        magnitude_spectrum = 20 * np.log(cv2.magnitude(dft_shift[:,:,0], dft_shift[:,:,1]) + 1)
-        cv2.imwrite(f"{data_image}_spectrum.png", magnitude_spectrum)
+    is_single = False
+    if type(data_images) is not list:
+        is_single = True
+        print("Single image mode")
+        data_images = [data_images]
 
-    # generate conversation
-    operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
-    problem = problem.replace("<metric>", 'psnr')
-    problem = problem.replace("<operation>", operation)
-    problem = problem.replace("<isotropic1>", "Isotropic_(None/2/4/6) " if "Isotropic" in objective else "")
-    problem = problem.replace("<isotropic2>", "a resolution ratio of ?, " if "Isotropic" in objective else "")
-    problem = problem.replace("<isotropic3>", "Isotropic_? " if "Isotropic" in objective else "")
+    input_texts = []
+    input_images = []
 
-    QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
-    message = {
-        "text": QUESTION_TEMPLATE.format(Question=problem),
-        "files": [f"{data_image}_spectrum.png"]
-    }
+    for data_image in data_images:
+        # check if spectrum image exists
+        if not os.path.exists(f"{data_image}_spectrum_new.png"):
+            # generate spectrum image
+            image = imread(data_image)
+            image = normalize(image, 0, 100, clip=True)
+            if len(image.shape) == 3:
+                image = image[0]
+            if image.shape[0] > 128 and image.shape[1] > 128:
+                # center crop
+                x = image.shape[0]//2 - 64
+                y = image.shape[1]//2 - 64
+                image = image[x:x+128, y:y+128]
+            else:
+                image = cv2.resize(image, (128, 128))
+            dft = cv2.dft(np.float32(image), flags=cv2.DFT_COMPLEX_OUTPUT)
+            dft_shift = np.fft.fftshift(dft)
+            magnitude_spectrum = 20 * np.log(cv2.magnitude(dft_shift[:,:,0], dft_shift[:,:,1]) + 1)
+            cv2.imwrite(f"{data_image}_spectrum_new.png", magnitude_spectrum)
+
+        # generate conversation
+        operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
+        problem = problem.replace("<metric>", 'psnr')
+        problem = problem.replace("<operation>", operation)
+        problem = problem.replace("<isotropic1>", "Isotropic_(None/2/4/6) " if "Isotropic" in objective else "")
+        problem = problem.replace("<isotropic2>", "a resolution ratio of ?, " if "Isotropic" in objective else "")
+        problem = problem.replace("<isotropic3>", "Isotropic_? " if "Isotropic" in objective else "")
+
+        QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
+        message = {
+            "text": QUESTION_TEMPLATE.format(Question=problem),
+            "files": [f"{data_image}_spectrum_new.png"]
+        }
+
+        # Initialize variables
+        images = []
+        if message["files"]:
+            for file_item in message["files"]:
+                if isinstance(file_item, dict):
+                    file_path = file_item["path"]
+                else:
+                    file_path = file_item
+                
+                images.append(file_path)
+
+        conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+        user_content = []
+        for image in images:
+            user_content.append({"type": "image", "image": image})
+        user_text = message['text']
+        if user_text:
+            user_content.append({"type": "text", "text": user_text})
+        conversation.append({"role": "user", "content": user_content})
+
+        prompt = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
+        image_inputs, _ = process_vision_info(conversation)
+
+        input_texts += [prompt]
+        input_images += image_inputs
 
     generation_args = {
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
         "do_sample": True if args.temperature > 0 else False,
         "repetition_penalty": args.repetition_penalty,
+        "eos_token_id": processor.tokenizer.eos_token_id
     }
-
-    # Initialize variables
-    images = []
-    videos = []
-
-    if message["files"]:
-        for file_item in message["files"]:
-            if isinstance(file_item, dict):
-                file_path = file_item["path"]
-            else:
-                file_path = file_item
-            
-            images.append(file_path)
-
-    conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
-    user_content = []
-    for image in images:
-        user_content.append({"type": "image", "image": image})
-    for video in videos:
-        user_content.append({"type": "video", "video": video, "fps":1.0})
-    user_text = message['text']
-    if user_text:
-        user_content.append({"type": "text", "text": user_text})
-    conversation.append({"role": "user", "content": user_content})
-
-    prompt = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
-    image_inputs, video_inputs = process_vision_info(conversation)
     
-    inputs = processor(text=[prompt], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt").to(args.device) 
+    inputs = processor(text=input_texts, images=input_images, padding=True, return_tensors="pt").to(args.device) 
+    outputs = language_model.generate(**inputs, **generation_args)
+    answers = processor.batch_decode(outputs, skip_special_tokens=True)
 
-    streamer = TextIteratorStreamer(processor.tokenizer, **{"skip_special_tokens": True, "skip_prompt": True, 'clean_up_tokenization_spaces':False,}) 
-    generation_kwargs = dict(inputs, streamer=streamer, eos_token_id=processor.tokenizer.eos_token_id, **generation_args)
-
-    language_model.generate(**generation_kwargs)
-
-    buffer = ""
-    for new_text in streamer:
-        buffer += new_text
-
-    return buffer
+    return answers[0] if is_single else answers

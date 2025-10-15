@@ -1,8 +1,10 @@
 import os
 import cv2
+import time
 import glob
 import argparse
 import tqdm
+import math
 import numpy as np
 
 from tifffile import imread, imwrite as imsave
@@ -37,23 +39,38 @@ def calculate_metrics(file1, file2):
 
     return psnr_value, ssim_value
 
-def process_single_image(img_input, gt_path, save_path, args, objective_options='None'):
-    
+def process_batch_image(img_inputs, gt_paths, save_paths, args, objective_options='None'):
+    st = time.time()
     if args.force_plan is not None:
-        plan_message = args.force_plan
+        plan_messages = [args.force_plan] * len(img_inputs)
     else:
-        plan_message = bot_streaming(img_input, objective_options, args=args)
-    output_file, _ = run_plan(img_input, plan_message)
+        plan_messages = bot_streaming(img_inputs, objective_options, args=args)
+    plan_time = time.time() - st
 
-    # Save the output image
-    image = imread(output_file)
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    # print(f"Saving restored image to {save_path}")
-    imsave(save_path, image)
+    psnr_values = []
+    ssim_values = []
 
-    # Calculate the PSNR and SSIM
-    psnr_value, ssim_value = calculate_metrics(output_file, gt_path)
-    return psnr_value, ssim_value, plan_message
+    from tqdm import tqdm
+    for img_input, plan_message, gt_path, save_path in tqdm(zip(img_inputs, plan_messages,gt_paths,save_paths)):
+        # st = time.time()
+        # Run the plan
+        output_file, _ = run_plan(img_input, plan_message)
+
+        # print(f"Processing time: {time.time() - st:.2f}s")
+        # st = time.time()
+
+        # Save the output image
+        image = imread(output_file)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        # print(f"Saving restored image to {save_path}")
+        imsave(save_path, image)
+
+        # Calculate the PSNR and SSIM
+        psnr_value, ssim_value = calculate_metrics(output_file, gt_path)
+        psnr_values.append(psnr_value)
+        ssim_values.append(ssim_value)
+        # print(f"Evaluation time: {time.time() - st:.2f}s")
+    return psnr_values, ssim_values, plan_messages, plan_time/len(img_inputs)
 
 def get_dataset(path, output_path,name):
     if not os.path.exists(path):
@@ -88,6 +105,7 @@ if __name__ == "__main__":
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--output-path", type=str, default=None)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--force-plan", type=str, default=None)
     parser.add_argument("--unseen-dataset", action="store_true")
     args = parser.parse_args()
@@ -97,7 +115,7 @@ if __name__ == "__main__":
 
     # Set the paths for datasets
     if not args.unseen_dataset:
-        paths = ["dataset/test/DIV2K_Agents_0314",'dataset/test/Flouresceneiso_Agents_New','dataset/test/Flouresceneproj_Agents_New','dataset/test/FlouresceneVCD_Agents_New']
+        paths = ["dataset/test_split/DIV2K_Agents_0314",'dataset/test_split/Flouresceneiso_Agents_New','dataset/test_split/Flouresceneproj_Agents_New','dataset/test_split/FlouresceneVCD_Agents_New']
         names = ["Normal","Isotropic","Projection","Volumetric"]
     else:
         paths = ["Shareloc","DeepBacs"]
@@ -116,15 +134,25 @@ if __name__ == "__main__":
         psnr_values = []
         ssim_values = []
         plan_messages = []
-        pbar = tqdm.tqdm(total=len(input_path), desc=f"Processing {name} Dataset")
-        for i in range(len(input_path)):
-            psnr_value, ssim_value, plan_message = process_single_image(input_path[i], gt_path[i], save_path[i], args, objective_options=name)
-            psnr_values.append(psnr_value)
-            ssim_values.append(ssim_value)
-            plan_messages.append(plan_message)
+        plan_times = []
+        batch_size = args.batch_size
+        pbar = tqdm.tqdm(total=math.ceil(len(input_path)/batch_size) , desc=f"Processing {name} Dataset")
+        for i in range(0,len(input_path),batch_size):
+            psnr_value, ssim_value, plan_message, plan_time = process_batch_image(
+                input_path[i:i+batch_size], 
+                gt_path[i:i+batch_size], 
+                save_path[i:i+batch_size], 
+                args, 
+                objective_options=name
+            )
+
+            psnr_values += psnr_value
+            ssim_values += ssim_value
+            plan_messages += plan_message
+            plan_times.append(plan_time)
 
             pbar.update(1)
-            pbar.set_postfix({"PSNR": f"{psnr_value:.2f}", "SSIM": f"{ssim_value:.4f}"})
+            pbar.set_postfix({"PSNR": f"{np.mean(psnr_value):.2f}", "SSIM": f"{np.mean(ssim_value):.4f}", "Time": f"{plan_time:.2f}s"})
 
         # Calculate the average PSNR and SSIM
         avg_psnr, std_psnr = np.mean(psnr_values), np.std(psnr_values)
@@ -136,7 +164,7 @@ if __name__ == "__main__":
         result_path = os.path.join(args.output_path, f"results_{name}.txt")
         with open(result_path, "w") as f:
             for i in range(len(input_path)):
-                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f} PLAN={plan_messages[i]}\n")
+                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f} PLAN={plan_messages[i]} TIME={plan_times[i//batch_size]:.2f}s\n")
             f.write(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}\n")
             f.write(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}\n")
 
