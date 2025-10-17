@@ -429,7 +429,7 @@ def set_seed(seed: int):
         torch.backends.cudnn.benchmark = True
 
 def bot_streaming(data_images, objective, args, progress=gr.Progress()):
-    problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for <metric>? You can use the tools: <operation><isotropic1>SR_(None/5/7/9) Denoising_(None/10/20/30). Please analyze the image and give the plan. For example, "<think> The spectrum shows ? which indicates that the image has <isotropic2>a blur kernel of ? and a noise of level ?. </think> <answer> <operation><isotropic3>SR_? Denoising_? </answer>".'
+    base_problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image with <task>? You can use the tools: <tools>. Please analyze the image and give the plan. For example, "<think> The spectrum shows ? which indicates that the image has ?. </think> <answer> <operation> </answer>".'
 
     is_single = False
     if type(data_images) is not list:
@@ -461,44 +461,46 @@ def bot_streaming(data_images, objective, args, progress=gr.Progress()):
             cv2.imwrite(f"{data_image}_spectrum_new.png", magnitude_spectrum)
 
         # generate conversation
-        operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
-        problem = problem.replace("<metric>", 'psnr')
-        problem = problem.replace("<operation>", operation)
-        problem = problem.replace("<isotropic1>", "Isotropic_(None/2/4/6) " if "Isotropic" in objective else "")
-        problem = problem.replace("<isotropic2>", "a resolution ratio of ?, " if "Isotropic" in objective else "")
-        problem = problem.replace("<isotropic3>", "Isotropic_? " if "Isotropic" in objective else "")
+        tasks = ["SR", "Denoising"] + (["Isotropic"] if "Isotropic" in objective else [])
+        for task in tasks:
+            if "SR" not in task and "Denoising" not in task and "Isotropic" not in task:
+                continue
 
-        QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
-        message = {
-            "text": QUESTION_TEMPLATE.format(Question=problem),
-            "files": [f"{data_image}_spectrum_new.png"]
-        }
+            problem = base_problem.replace("<task>", task.split("_")[0])
+            problem = problem.replace("<tools>", f"SR_None, SR_5, SR_7, SR_9" if "SR" in task else ("Denoising_None, Denoising_10, Denoising_20, Denoising_30" if "Denoising" in task else f"Isotropic_None, Isotropic_2, Isotropic_4, Isotropic_6"))
+            problem = problem.replace("<operation>", f"{task.split('_')[0]}_?")
 
-        # Initialize variables
-        images = []
-        if message["files"]:
-            for file_item in message["files"]:
-                if isinstance(file_item, dict):
-                    file_path = file_item["path"]
-                else:
-                    file_path = file_item
-                
-                images.append(file_path)
+            QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
+            message = {
+                "text": QUESTION_TEMPLATE.format(Question=problem),
+                "files": [f"{data_image}_spectrum_new.png"]
+            }
 
-        conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
-        user_content = []
-        for image in images:
-            user_content.append({"type": "image", "image": image})
-        user_text = message['text']
-        if user_text:
-            user_content.append({"type": "text", "text": user_text})
-        conversation.append({"role": "user", "content": user_content})
+            # Initialize variables
+            images = []
+            if message["files"]:
+                for file_item in message["files"]:
+                    if isinstance(file_item, dict):
+                        file_path = file_item["path"]
+                    else:
+                        file_path = file_item
+                    
+                    images.append(file_path)
 
-        prompt = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
-        image_inputs, _ = process_vision_info(conversation)
+            conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+            user_content = []
+            for image in images:
+                user_content.append({"type": "image", "image": image})
+            user_text = message['text']
+            if user_text:
+                user_content.append({"type": "text", "text": user_text})
+            conversation.append({"role": "user", "content": user_content})
 
-        input_texts += [prompt]
-        input_images += image_inputs
+            prompt = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
+            image_inputs, _ = process_vision_info(conversation)
+
+            input_texts += [prompt]
+            input_images += image_inputs
 
     generation_args = {
         "max_new_tokens": args.max_new_tokens,
@@ -511,5 +513,17 @@ def bot_streaming(data_images, objective, args, progress=gr.Progress()):
     inputs = processor(text=input_texts, images=input_images, padding=True, return_tensors="pt").to(args.device) 
     outputs = language_model.generate(**inputs, **generation_args)
     answers = processor.batch_decode(outputs, skip_special_tokens=True)
+
+    # post-process answers
+    operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
+    step = 3 if "Isotropic" in objective else 2
+    new_answers = []
+    for i in range(0, len(answers) - len(answers) % step, step):
+        merged_ans = operation + " ".join(
+            answers[i + j].split("<answer>")[-1].split("</answer>")[0].strip()
+            for j in range(step)
+        )
+        new_answers.append(merged_ans)
+    answers = new_answers
 
     return answers[0] if is_single else answers
