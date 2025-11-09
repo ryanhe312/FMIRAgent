@@ -17,7 +17,7 @@ pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.
 2. Run the Web Interface
 
 ```bash
-python app.py --model-path experiment/FMIRAgent
+python app.py
 ```
 
 ## Benchmark with our dataset
@@ -27,7 +27,7 @@ python app.py --model-path experiment/FMIRAgent
 2. Test models
 
 ```bash
-python benchmark.py --model-path experiment/FMIRAgent --output-path our_dataset
+python benchmark.py --output-path our_dataset
 ```
 
 ## Benchmark with unseen dataset
@@ -37,5 +37,5 @@ python benchmark.py --model-path experiment/FMIRAgent --output-path our_dataset
 2. Test models
 
 ```bash
-python benchmark.py --model-path experiment/FMIRAgent --output-path unseen_dataset --unseen-dataset
+python benchmark.py --output-path unseen_dataset --unseen-dataset
 ```

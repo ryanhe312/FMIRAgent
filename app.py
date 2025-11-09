@@ -14,10 +14,10 @@ def load_models_wrap(device, chop, quantization, progress=gr.Progress()):
     return load_models(device, chop, quantization, args, progress)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model-path", type=str, default=None)
+parser.add_argument("--model-path", type=str, default="experiment/FMIRAgent")
 parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
 parser.add_argument("--device", type=str, default="cuda:0")
-parser.add_argument("--temperature", type=float, default=0.6)
+parser.add_argument("--temperature", type=float, default=0.1)
 parser.add_argument("--repetition-penalty", type=float, default=1.0)
 parser.add_argument("--max-new-tokens", type=int, default=1024)
 args = parser.parse_args()

@@ -8,17 +8,17 @@ import math
 import numpy as np
 
 from tifffile import imread, imwrite as imsave
-from piq import psnr, ssim
+from piq import psnr, ssim, LPIPS
 
 from function import *
 
 # seed everything
 set_seed(42)
 
-def calculate_metrics(file1, file2):
+def calculate_metrics(file1, file2, lpips_metric):
     # Read the TIFF files
     img1 = imread(file1)
-    img2 = normalize(imread(file2),0,100)
+    img2 = normalize(imread(file2), 0, 100, clip=True)
 
     # Ensure the images have the same shape
     if img1.shape != img2.shape:
@@ -31,15 +31,18 @@ def calculate_metrics(file1, file2):
         img1 = img1.unsqueeze(0).unsqueeze(0)
         img2 = img2.unsqueeze(0).unsqueeze(0)
     elif img1.ndim == 3:
-        img1 = img1.permute(2,0,1).unsqueeze(0)
-        img2 = img2.permute(2,0,1).unsqueeze(0)
+        img1 = img1.unsqueeze(1)
+        img2 = img2.unsqueeze(1)
 
     psnr_value = psnr(img1, img2).item()
     ssim_value = ssim(img1, img2).item()
+    
+    lpips_value = [lpips_metric(img1[i:i+1], img2[i:i+1]).item() for i in range(img1.shape[0])]
+    lpips_value = np.mean(lpips_value)
 
-    return psnr_value, ssim_value
+    return psnr_value, ssim_value, lpips_value
 
-def process_batch_image(img_inputs, gt_paths, save_paths, args, objective_options='None'):
+def process_batch_image(img_inputs, gt_paths, save_paths, args, lpips_metric, objective_options='None'):
     st = time.time()
     if args.force_plan is not None:
         plan_messages = [args.force_plan] * len(img_inputs)
@@ -49,15 +52,20 @@ def process_batch_image(img_inputs, gt_paths, save_paths, args, objective_option
 
     psnr_values = []
     ssim_values = []
+    lpips_values = []
+    nrmse_values = []
 
     from tqdm import tqdm
     for img_input, plan_message, gt_path, save_path in tqdm(zip(img_inputs, plan_messages,gt_paths,save_paths)):
         # st = time.time()
         # Run the plan
-        output_file, _ = run_plan(img_input, plan_message)
+        output_file, error = run_plan(img_input, plan_message)
 
         # print(f"Processing time: {time.time() - st:.2f}s")
         # st = time.time()
+        if output_file is None:
+            print(f"Failed to process image {img_input} with error {error}")
+            continue
 
         # Save the output image
         image = imread(output_file)
@@ -66,11 +74,14 @@ def process_batch_image(img_inputs, gt_paths, save_paths, args, objective_option
         imsave(save_path, image)
 
         # Calculate the PSNR and SSIM
-        psnr_value, ssim_value = calculate_metrics(output_file, gt_path)
+        psnr_value, ssim_value, lpips_value = calculate_metrics(output_file, gt_path, lpips_metric)
+        nrmse_value = 10 ** (-psnr_value / 20.0)
         psnr_values.append(psnr_value)
         ssim_values.append(ssim_value)
+        lpips_values.append(lpips_value)
+        nrmse_values.append(nrmse_value)
         # print(f"Evaluation time: {time.time() - st:.2f}s")
-    return psnr_values, ssim_values, plan_messages, plan_time/len(img_inputs)
+    return psnr_values, ssim_values, lpips_values, nrmse_values, plan_messages, plan_time/len(psnr_values)
 
 def get_dataset(path, output_path,name):
     if not os.path.exists(path):
@@ -98,20 +109,21 @@ def get_dataset(path, output_path,name):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default=None)
+    parser.add_argument("--model-path", type=str, default="experiment/FMIRAgent")
     parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--temperature", type=float, default=0.6)
+    parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--output-path", type=str, default=None)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--force-plan", type=str, default=None)
     parser.add_argument("--unseen-dataset", action="store_true")
     args = parser.parse_args()
 
     # Load the model
-    load_models("CUDA", "Yes", "float16", args=args)
+    load_models("Paralleled CUDA", "Yes", "float16", args=args)
+    lpips_metric = LPIPS(reduction='mean').to(args.device)
 
     # Set the paths for datasets
     if not args.unseen_dataset:
@@ -133,39 +145,50 @@ if __name__ == "__main__":
         # run the model on each image
         psnr_values = []
         ssim_values = []
+        lpips_values = []
+        nrmse_values = []
         plan_messages = []
         plan_times = []
         batch_size = args.batch_size
         pbar = tqdm.tqdm(total=math.ceil(len(input_path)/batch_size) , desc=f"Processing {name} Dataset")
         for i in range(0,len(input_path),batch_size):
-            psnr_value, ssim_value, plan_message, plan_time = process_batch_image(
+            psnr_value, ssim_value, lpips_value, nrmse_value, plan_message, plan_time = process_batch_image(
                 input_path[i:i+batch_size], 
                 gt_path[i:i+batch_size], 
                 save_path[i:i+batch_size], 
-                args, 
+                args,
+                lpips_metric,
                 objective_options=name
             )
 
             psnr_values += psnr_value
             ssim_values += ssim_value
+            lpips_values += lpips_value
+            nrmse_values += nrmse_value
             plan_messages += plan_message
             plan_times.append(plan_time)
 
             pbar.update(1)
-            pbar.set_postfix({"PSNR": f"{np.mean(psnr_value):.2f}", "SSIM": f"{np.mean(ssim_value):.4f}", "Time": f"{plan_time:.2f}s"})
+            pbar.set_postfix({"PSNR": f"{np.mean(psnr_value):.2f}", "SSIM": f"{np.mean(ssim_value):.4f}", "LPIPS": f"{np.mean(lpips_value):.4f}", "NRMSE": f"{np.mean(nrmse_value):.4f}", "Time": f"{plan_time:.2f}s"})
 
         # Calculate the average PSNR and SSIM
         avg_psnr, std_psnr = np.mean(psnr_values), np.std(psnr_values)
         avg_ssim, std_ssim = np.mean(ssim_values), np.std(ssim_values)
+        avg_lpips, std_lpips = np.mean(lpips_values), np.std(lpips_values)
+        avg_nrmse, std_nrmse = np.mean(nrmse_values), np.std(nrmse_values)
         print(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}")
         print(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}")
+        print(f"Average LPIPS: {avg_lpips:.4f} ± {std_lpips:.4f}")
+        print(f"Average NRMSE: {avg_nrmse:.4f} ± {std_nrmse:.4f}")
 
         # Save the results to a text file
         result_path = os.path.join(args.output_path, f"results_{name}.txt")
         with open(result_path, "w") as f:
-            for i in range(len(input_path)):
-                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f} PLAN={plan_messages[i]} TIME={plan_times[i//batch_size]:.2f}s\n")
+            for i in range(len(psnr_values)):
+                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f}, LPIPS={lpips_values[i]:.4f}, NRMSE={nrmse_values[i]:.4f} PLAN={plan_messages[i]} TIME={plan_times[i//batch_size]:.2f}s\n")
             f.write(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}\n")
             f.write(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}\n")
+            f.write(f"Average LPIPS: {avg_lpips:.4f} ± {std_lpips:.4f}\n")
+            f.write(f"Average NRMSE: {avg_nrmse:.4f} ± {std_nrmse:.4f}\n")
 
         print(f"Results saved to {result_path}")

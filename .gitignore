@@ -11,8 +11,8 @@ output
 wandb
 DeepBacs
 Shareloc
-unseen_dataset
-our_dataset
+*dataset*
+.vscode
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

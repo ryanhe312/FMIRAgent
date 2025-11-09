@@ -373,7 +373,7 @@ def run_plan(data_image, plan, progress=gr.Progress()):
     image = lrs.clone()
     # print(f"Plan: {plan}")
 
-    if plan:
+    try:
         if "Volumetric" in plan:
             vol_model = vol_models[plan.split()[0]]
             sr_model = sr_models[plan.split()[1]]
@@ -407,6 +407,8 @@ def run_plan(data_image, plan, progress=gr.Progress()):
             image = image[1] if image is tuple else image
         elif "Isotropic" in plan:
             image = iso_model(image, 0)
+    except Exception as e:
+        return [None, f"Error in running plan: {str(e)}"]
 
     image = image.squeeze().cpu().numpy().clip(0,1)
     axes = "YX" if not "Volumetric" in plan else "ZYX"
@@ -507,9 +509,15 @@ def bot_streaming(data_images, objective, args, progress=gr.Progress()):
         "repetition_penalty": args.repetition_penalty,
         "eos_token_id": processor.tokenizer.eos_token_id
     }
+
+    # offload language model to GPU
+    language_model.to(args.device)
     
     inputs = processor(text=input_texts, images=input_images, padding=True, return_tensors="pt").to(args.device) 
     outputs = language_model.generate(**inputs, **generation_args)
     answers = processor.batch_decode(outputs, skip_special_tokens=True)
+
+    # offload language model to CPU
+    language_model.to('cpu')
 
     return answers[0] if is_single else answers
