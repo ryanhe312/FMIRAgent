@@ -19,7 +19,7 @@ parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct
 parser.add_argument("--device", type=str, default="cuda:0")
 parser.add_argument("--temperature", type=float, default=0.1)
 parser.add_argument("--repetition-penalty", type=float, default=1.0)
-parser.add_argument("--max-new-tokens", type=int, default=1024)
+parser.add_argument("--max-new-tokens", type=int, default=256)
 args = parser.parse_args()
 
 with gr.Blocks(title="FMIRAgents Web Demo") as demo:

@@ -8,14 +8,14 @@ import math
 import numpy as np
 
 from tifffile import imread, imwrite as imsave
-from piq import psnr, ssim, LPIPS
+from piq import psnr, ssim, LPIPS, DISTS
 
 from function import *
 
 # seed everything
 set_seed(42)
 
-def calculate_metrics(file1, file2, lpips_metric):
+def calculate_metrics(file1, file2, lpips_metric, dists_metric):
     # Read the TIFF files
     img1 = imread(file1)
     img2 = normalize(imread(file2), 0, 100, clip=True)
@@ -40,9 +40,12 @@ def calculate_metrics(file1, file2, lpips_metric):
     lpips_value = [lpips_metric(img1[i:i+1], img2[i:i+1]).item() for i in range(img1.shape[0])]
     lpips_value = np.mean(lpips_value)
 
-    return psnr_value, ssim_value, lpips_value
+    dists_value = [dists_metric(img1[i:i+1], img2[i:i+1]).item() for i in range(img1.shape[0])]
+    dists_value = np.mean(dists_value)
 
-def process_batch_image(img_inputs, gt_paths, save_paths, args, lpips_metric, objective_options='None'):
+    return psnr_value, ssim_value, lpips_value, dists_value
+
+def process_batch_image(img_inputs, gt_paths, save_paths, args, lpips_metric, dists_metric, objective_options='None'):
     st = time.time()
     if args.force_plan is not None:
         plan_messages = [args.force_plan] * len(img_inputs)
@@ -53,35 +56,36 @@ def process_batch_image(img_inputs, gt_paths, save_paths, args, lpips_metric, ob
     psnr_values = []
     ssim_values = []
     lpips_values = []
-    nrmse_values = []
+    dists_values = []
 
-    from tqdm import tqdm
-    for img_input, plan_message, gt_path, save_path in tqdm(zip(img_inputs, plan_messages,gt_paths,save_paths)):
+    for img_input, plan_message, gt_path, save_path in zip(img_inputs, plan_messages,gt_paths,save_paths):
         # st = time.time()
         # Run the plan
-        output_file, error = run_plan(img_input, plan_message)
+        psnr_value, ssim_value, lpips_value, dists_value = get_plan(img_input, plan_message)
+        if psnr_value is None:
+            output_file, error = run_plan(img_input, plan_message)
 
-        # print(f"Processing time: {time.time() - st:.2f}s")
-        # st = time.time()
-        if output_file is None:
-            print(f"Failed to process image {img_input} with error {error}")
-            continue
+            # print(f"Processing time: {time.time() - st:.2f}s")
+            # st = time.time()
+            if output_file is None:
+                print(f"Failed to process image {img_input} with error {error}")
+                continue
 
-        # Save the output image
-        image = imread(output_file)
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        # print(f"Saving restored image to {save_path}")
-        imsave(save_path, image)
+            # Save the output image
+            image = imread(output_file)
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            # print(f"Saving restored image to {save_path}")
+            imsave(save_path, image)
 
-        # Calculate the PSNR and SSIM
-        psnr_value, ssim_value, lpips_value = calculate_metrics(output_file, gt_path, lpips_metric)
-        nrmse_value = 10 ** (-psnr_value / 20.0)
+            # Calculate the PSNR and SSIM
+            psnr_value, ssim_value, lpips_value, dists_value = calculate_metrics(output_file, gt_path, lpips_metric, dists_metric)
+
         psnr_values.append(psnr_value)
         ssim_values.append(ssim_value)
         lpips_values.append(lpips_value)
-        nrmse_values.append(nrmse_value)
+        dists_values.append(dists_value)
         # print(f"Evaluation time: {time.time() - st:.2f}s")
-    return psnr_values, ssim_values, lpips_values, nrmse_values, plan_messages, plan_time/len(psnr_values)
+    return psnr_values, ssim_values, lpips_values, dists_values, plan_messages, plan_time/len(psnr_values)
 
 def get_dataset(path, output_path,name):
     if not os.path.exists(path):
@@ -99,6 +103,12 @@ def get_dataset(path, output_path,name):
         gt_path = sorted(glob.glob(os.path.join(path, "*", "HR.tif")))
         save_path = [p.replace("LR", "SR").replace(path,os.path.join(output_path,name)) for p in input_path]
 
+    elif name == "DeepSemi":
+        # Get the paths for input, ground truth, and save directories
+        input_path = sorted(glob.glob(os.path.join(path, "*noisy", "*.tif")))
+        gt_path = sorted(glob.glob(os.path.join(path, "*clean", "*.tif")))
+        save_path = [p.replace("noisy", "denoise").replace(path,os.path.join(output_path,name)) for p in input_path]
+
     else:
         # Get the paths for input, ground truth, and save directories
         input_path = sorted(glob.glob(os.path.join(path, "000000*.tif")))
@@ -114,7 +124,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--output-path", type=str, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--force-plan", type=str, default=None)
@@ -124,14 +134,15 @@ if __name__ == "__main__":
     # Load the model
     load_models("Paralleled CUDA", "Yes", "float16", args=args)
     lpips_metric = LPIPS(reduction='mean').to(args.device)
+    dists_metric = DISTS(reduction='mean').to(args.device)
 
     # Set the paths for datasets
     if not args.unseen_dataset:
         paths = ["dataset/test_split/DIV2K_Agents_0314",'dataset/test_split/Flouresceneiso_Agents_New','dataset/test_split/Flouresceneproj_Agents_New','dataset/test_split/FlouresceneVCD_Agents_New']
         names = ["Normal","Isotropic","Projection","Volumetric"]
     else:
-        paths = ["Shareloc","DeepBacs"]
-        names = ["Shareloc","DeepBacs"]
+        paths = ["Shareloc","DeepBacs",'DeepSemi','Motion']
+        names = ["Shareloc","DeepBacs",'DeepSemi','Motion']
 
     # Iterate over each dataset
     for path, name in zip(paths, names):
@@ -146,49 +157,50 @@ if __name__ == "__main__":
         psnr_values = []
         ssim_values = []
         lpips_values = []
-        nrmse_values = []
+        dists_values = []
         plan_messages = []
         plan_times = []
         batch_size = args.batch_size
         pbar = tqdm.tqdm(total=math.ceil(len(input_path)/batch_size) , desc=f"Processing {name} Dataset")
         for i in range(0,len(input_path),batch_size):
-            psnr_value, ssim_value, lpips_value, nrmse_value, plan_message, plan_time = process_batch_image(
+            psnr_value, ssim_value, lpips_value, dists_value, plan_message, plan_time = process_batch_image(
                 input_path[i:i+batch_size], 
                 gt_path[i:i+batch_size], 
                 save_path[i:i+batch_size], 
                 args,
                 lpips_metric,
+                dists_metric,
                 objective_options=name
             )
 
             psnr_values += psnr_value
             ssim_values += ssim_value
             lpips_values += lpips_value
-            nrmse_values += nrmse_value
+            dists_values += dists_value
             plan_messages += plan_message
             plan_times.append(plan_time)
 
             pbar.update(1)
-            pbar.set_postfix({"PSNR": f"{np.mean(psnr_value):.2f}", "SSIM": f"{np.mean(ssim_value):.4f}", "LPIPS": f"{np.mean(lpips_value):.4f}", "NRMSE": f"{np.mean(nrmse_value):.4f}", "Time": f"{plan_time:.2f}s"})
+            pbar.set_postfix({"PSNR": f"{np.mean(psnr_value):.2f}", "SSIM": f"{np.mean(ssim_value):.4f}", "LPIPS": f"{np.mean(lpips_value):.4f}", "dists": f"{np.mean(dists_value):.4f}", "Time": f"{plan_time:.2f}s"})
 
         # Calculate the average PSNR and SSIM
         avg_psnr, std_psnr = np.mean(psnr_values), np.std(psnr_values)
         avg_ssim, std_ssim = np.mean(ssim_values), np.std(ssim_values)
         avg_lpips, std_lpips = np.mean(lpips_values), np.std(lpips_values)
-        avg_nrmse, std_nrmse = np.mean(nrmse_values), np.std(nrmse_values)
+        avg_dists, std_dists = np.mean(dists_values), np.std(dists_values)
         print(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}")
         print(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}")
         print(f"Average LPIPS: {avg_lpips:.4f} ± {std_lpips:.4f}")
-        print(f"Average NRMSE: {avg_nrmse:.4f} ± {std_nrmse:.4f}")
+        print(f"Average dists: {avg_dists:.4f} ± {std_dists:.4f}")
 
         # Save the results to a text file
         result_path = os.path.join(args.output_path, f"results_{name}.txt")
         with open(result_path, "w") as f:
             for i in range(len(psnr_values)):
-                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f}, LPIPS={lpips_values[i]:.4f}, NRMSE={nrmse_values[i]:.4f} PLAN={plan_messages[i]} TIME={plan_times[i//batch_size]:.2f}s\n")
+                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f}, LPIPS={lpips_values[i]:.4f}, dists={dists_values[i]:.4f} PLAN={plan_messages[i]} TIME={plan_times[i//batch_size]:.2f}s\n")
             f.write(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}\n")
             f.write(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}\n")
             f.write(f"Average LPIPS: {avg_lpips:.4f} ± {std_lpips:.4f}\n")
-            f.write(f"Average NRMSE: {avg_nrmse:.4f} ± {std_nrmse:.4f}\n")
+            f.write(f"Average dists: {avg_dists:.4f} ± {std_dists:.4f}\n")
 
         print(f"Results saved to {result_path}")

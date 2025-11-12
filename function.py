@@ -1,6 +1,7 @@
 import os
 import cv2
 import torch
+import json
 import utility
 import numpy as np
 import gradio as gr
@@ -357,6 +358,18 @@ def load_models(device, chop, quantization, args, progress=gr.Progress()):
 
     return f"Models loaded! device={device}, chop={chop}, quantization={quantization}"
 
+def get_plan(img_input, plan):
+    plan_path = os.path.join(os.path.dirname(img_input),f'plans{os.path.basename(img_input)[:-4]}.json')
+    if not os.path.exists(plan_path):
+        return None, None, None, None
+    try:
+        plan = plan.split("<answer>")[-1].split("</answer>")[0].strip()
+        with open(plan_path,'r') as f:
+            plan_details = json.load(f)[plan]
+        return plan_details['psnr'], plan_details['ssim'], plan_details['lpips'], plan_details['dists']
+    except Exception as e:
+        print(f"Error in loading plan details: {str(e)}")
+        return None, None, None, None
 
 @torch.no_grad()
 def run_plan(data_image, plan, progress=gr.Progress()):
@@ -373,10 +386,14 @@ def run_plan(data_image, plan, progress=gr.Progress()):
     image = lrs.clone()
     # print(f"Plan: {plan}")
 
+    plan = plan.replace("SR_?", np.random.choice(list(sr_models.keys())))
+    plan = plan.replace("Denoising_?", np.random.choice(list(noise_models.keys())))
+    plan = plan.replace("Isotropic_?", np.random.choice(list(iso_models.keys())))
+
     try:
         if "Volumetric" in plan:
             vol_model = vol_models[plan.split()[0]]
-            sr_model = sr_models[plan.split()[1]]
+            sr_model = sr_models[plan.split()[1]] 
             noise_model = noise_models[plan.split()[2]]
         elif "Projection" in plan:
             proj_model = proj_models[plan.split()[0]]

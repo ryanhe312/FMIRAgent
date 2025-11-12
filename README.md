@@ -53,7 +53,7 @@ The web UI will be available at `http://0.0.0.0:8989`. You can customize the mod
 | `--device`            | The device to run the model on.                   | `cuda:0`                     |
 | `--temperature`       | Sampling temperature for generation.              | `0.1`                        |
 | `--repetition-penalty`| Repetition penalty for generation.                | `1.0`                        |
-| `--max-new-tokens`    | Maximum number of new tokens to generate.         | `1024`                       |
+| `--max-new-tokens`    | Maximum number of new tokens to generate.         | `256`                        |
 
 ### Benchmarking
 
@@ -100,10 +100,10 @@ The script saves restored images and a `results_{dataset_name}.txt` file with pe
 | `--device`            | The device to run the model on.                   | `cuda:0`                     |
 | `--temperature`       | Sampling temperature for generation.              | `0.1`                        |
 | `--repetition-penalty`| Repetition penalty for generation.                | `1.0`                        |
-| `--max-new-tokens`    | Maximum number of new tokens to generate.         | `1024`                       |
+| `--max-new-tokens`    | Maximum number of new tokens to generate.         | `256`                        |
 | `--output-path`       | Directory to save benchmark results.              | `None`                       |
 | `--batch-size`        | Number of images to process in a batch.           | `8`                          |
-| `--force-plan`        | Use a fixed plan for all images instead of generating one. | `None`               |
+| `--force-plan`        | Use a fixed plan for all images instead of generating one. | `None`              |
 | `--unseen-dataset`    | Flag to run benchmark on the unseen datasets.     | `False`                      |
 
 ## License

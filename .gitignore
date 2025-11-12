@@ -6,12 +6,14 @@ EasyR1
 *.csv
 *.pt
 experiment/
-dataset
 output
 wandb
 DeepBacs
 Shareloc
+DeepSemi
+Motion
 *dataset*
+*result
 .vscode
 
 # Byte-compiled / optimized / DLL files
