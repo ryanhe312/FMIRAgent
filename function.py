@@ -362,21 +362,40 @@ def get_plan(img_input, plan):
     plan_path = os.path.join(os.path.dirname(img_input),f'plans{os.path.basename(img_input)[:-4]}.json')
     if not os.path.exists(plan_path):
         return None, None, None, None
+    with open(plan_path,'r') as f:
+        plan_details = json.load(f)
     try:
         plan = plan.split("<answer>")[-1].split("</answer>")[0].strip()
-        with open(plan_path,'r') as f:
-            plan_details = json.load(f)[plan]
-        return plan_details['psnr'], plan_details['ssim'], plan_details['lpips'], plan_details['dists']
-    except Exception as e:
-        print(f"Error in loading plan details: {str(e)}")
-        return None, None, None, None
+        return plan_details[plan]['psnr'], plan_details[plan]['ssim'], plan_details[plan]['lpips'], plan_details[plan]['dists']
+    except:
+        plan = np.random.choice([i for i in plan_details.keys() if i != "origin_plan"])
+        return plan_details[plan]['psnr'], plan_details[plan]['ssim'], plan_details[plan]['lpips'], plan_details[plan]['dists']
 
 @torch.no_grad()
 def run_plan(data_image, plan, progress=gr.Progress()):
     try: 
         plan = plan.split("<answer>")[-1].split("</answer>")[0].strip()
+        if "Volumetric" in plan:
+            vol_model = vol_models['Volumetric']
+            sr_model = sr_models[plan.split()[1]] 
+            noise_model = noise_models[plan.split()[2]]
+        elif "Projection" in plan:
+            proj_model = proj_models['Projection']
+            sr_model = sr_models[plan.split()[1]]
+            noise_model = noise_models[plan.split()[2]]
+        elif "Isotropic" in plan:
+            iso_model = iso_models[plan.split()[0]]
+            sr_model = sr_models[plan.split()[1]]
+            noise_model = noise_models[plan.split()[2]]
+        else:
+            sr_model = sr_models[plan.split()[0]]
+            noise_model = noise_models[plan.split()[1]]
     except:
-        plan = "SR_None Denoising_None"
+        sr_model = np.random.choice(list(sr_models.values()))
+        noise_model = np.random.choice(list(noise_models.values()))
+        iso_model = np.random.choice(list(iso_models.values()))
+        vol_model = vol_models['Volumetric']
+        proj_model = proj_models['Projection']
 
     image = imread(data_image)
     # print(image.shape, image.max(), image.min())
@@ -386,27 +405,8 @@ def run_plan(data_image, plan, progress=gr.Progress()):
     image = lrs.clone()
     # print(f"Plan: {plan}")
 
-    plan = plan.replace("SR_?", np.random.choice(list(sr_models.keys())))
-    plan = plan.replace("Denoising_?", np.random.choice(list(noise_models.keys())))
-    plan = plan.replace("Isotropic_?", np.random.choice(list(iso_models.keys())))
-
     try:
-        if "Volumetric" in plan:
-            vol_model = vol_models[plan.split()[0]]
-            sr_model = sr_models[plan.split()[1]] 
-            noise_model = noise_models[plan.split()[2]]
-        elif "Projection" in plan:
-            proj_model = proj_models[plan.split()[0]]
-            sr_model = sr_models[plan.split()[1]]
-            noise_model = noise_models[plan.split()[2]]
-        elif "Isotropic" in plan:
-            iso_model = iso_models[plan.split()[0]]
-            sr_model = sr_models[plan.split()[1]]
-            noise_model = noise_models[plan.split()[2]]
-            image = image.unsqueeze(0)
-        else:
-            sr_model = sr_models[plan.split()[0]]
-            noise_model = noise_models[plan.split()[1]]
+        if image.ndim == 3:
             image = image.unsqueeze(0)
 
         # 1chw to c1hw
@@ -447,9 +447,47 @@ def set_seed(seed: int):
         torch.backends.cudnn.deterministic = False
         torch.backends.cudnn.benchmark = True
 
-def bot_streaming(data_images, objective, args, progress=gr.Progress()):
-    problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for <metric>? You can use the tools: <operation><isotropic1>SR_(None/5/7/9) Denoising_(None/10/20/30). Please analyze the image and give the plan. For example, "<think> The spectrum shows ? which indicates that the image has <isotropic2>a blur kernel of ? and a noise of level ?. </think> <answer> <operation><isotropic3>SR_? Denoising_? </answer>".'
+def generate_spectrum(image_path):
+    # generate spectrum image
+    image = imread(image_path)
+    image = normalize(image, 0, 100, clip=True)
+    if len(image.shape) == 3:
+        image = image[0]
+    if image.shape[0] > 128 and image.shape[1] > 128:
+        # center crop
+        x = image.shape[0]//2 - 64
+        y = image.shape[1]//2 - 64
+        image = image[x:x+128, y:y+128]
+    else:
+        image = cv2.resize(image, (128, 128))
+    dft = cv2.dft(np.float32(image), flags=cv2.DFT_COMPLEX_OUTPUT)
+    dft_shift = np.fft.fftshift(dft)
+    magnitude_spectrum = 20 * np.log(cv2.magnitude(dft_shift[:,:,0], dft_shift[:,:,1]) + 1)
+    return magnitude_spectrum
 
+def construct_prompt(objective):
+    problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for <metric>? You can use the tools: <operation><isotropic1>SR_(None/5/7/9) Denoising_(None/10/20/30). Please analyze the image and give the plan. For example, "<think> The spectrum shows ? which indicates that the image has <isotropic2>a blur kernel of ? and a noise of level ?. </think> <answer> <operation><isotropic3>SR_? Denoising_? </answer>".'
+    operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
+    problem = problem.replace("<metric>", 'psnr')
+    problem = problem.replace("<operation>", operation)
+    problem = problem.replace("<isotropic1>", "Isotropic_(None/2/4/6) " if "Isotropic" in objective else "")
+    problem = problem.replace("<isotropic3>", "Isotropic_? " if "Isotropic" in objective else "")
+    QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
+    final_prompt = QUESTION_TEMPLATE.format(Question=problem)
+    return final_prompt
+
+def construct_prompt_noreasoning(objective):
+    problem = 'You are a microscopy expert. Given the Fourier spectrum of a microscopy image. How to enhance the quality of this image for <metric>? You can use the tools: <operation> <isotropic1> SR_None, SR_5, SR_7, SR_9, Denoising_None, Denoising_10, Denoising_20, Denoising_30. Please directly give the plan. Your Answer should only contain the final plan without any explanation. For example, <operation><isotropic3>SR_? Denoising_?. '
+    operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
+    problem = problem.replace("<metric>", 'psnr')
+    problem = problem.replace("<operation>", operation)
+    problem = problem.replace("<isotropic1>", "Isotropic_None, Isotropic_2, Isotropic_4, Isotropic_6, " if "Isotropic" in objective else "")
+    problem = problem.replace("<isotropic3>", "Isotropic_? " if "Isotropic" in objective else "")
+    QUESTION_TEMPLATE = "{Question}"
+    final_prompt = QUESTION_TEMPLATE.format(Question=problem)
+    return final_prompt
+
+def bot_streaming(data_images, objective, args, progress=gr.Progress()):
     is_single = False
     if type(data_images) is not list:
         is_single = True
@@ -462,34 +500,10 @@ def bot_streaming(data_images, objective, args, progress=gr.Progress()):
     for data_image in data_images:
         # check if spectrum image exists
         if not os.path.exists(f"{data_image}_spectrum_new.png"):
-            # generate spectrum image
-            image = imread(data_image)
-            image = normalize(image, 0, 100, clip=True)
-            if len(image.shape) == 3:
-                image = image[0]
-            if image.shape[0] > 128 and image.shape[1] > 128:
-                # center crop
-                x = image.shape[0]//2 - 64
-                y = image.shape[1]//2 - 64
-                image = image[x:x+128, y:y+128]
-            else:
-                image = cv2.resize(image, (128, 128))
-            dft = cv2.dft(np.float32(image), flags=cv2.DFT_COMPLEX_OUTPUT)
-            dft_shift = np.fft.fftshift(dft)
-            magnitude_spectrum = 20 * np.log(cv2.magnitude(dft_shift[:,:,0], dft_shift[:,:,1]) + 1)
-            cv2.imwrite(f"{data_image}_spectrum_new.png", magnitude_spectrum)
+            cv2.imwrite(f"{data_image}_spectrum_new.png", generate_spectrum(data_image))
 
-        # generate conversation
-        operation = "Projection " if "Projection" in objective else ("Volumetric " if "Volumetric" in objective else "")
-        problem = problem.replace("<metric>", 'psnr')
-        problem = problem.replace("<operation>", operation)
-        problem = problem.replace("<isotropic1>", "Isotropic_(None/2/4/6) " if "Isotropic" in objective else "")
-        problem = problem.replace("<isotropic2>", "a resolution ratio of ?, " if "Isotropic" in objective else "")
-        problem = problem.replace("<isotropic3>", "Isotropic_? " if "Isotropic" in objective else "")
-
-        QUESTION_TEMPLATE = "{Question}  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags."
         message = {
-            "text": QUESTION_TEMPLATE.format(Question=problem),
+            "text": construct_prompt(objective) if not args.no_reasoning else construct_prompt_noreasoning(objective),
             "files": [f"{data_image}_spectrum_new.png"]
         }
 
@@ -504,7 +518,7 @@ def bot_streaming(data_images, objective, args, progress=gr.Progress()):
                 
                 images.append(file_path)
 
-        conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+        conversation = [{"role": "system", "content": SYSTEM_PROMPT}] if not args.no_reasoning else []
         user_content = []
         for image in images:
             user_content.append({"type": "image", "image": image})
@@ -532,7 +546,7 @@ def bot_streaming(data_images, objective, args, progress=gr.Progress()):
     
     inputs = processor(text=input_texts, images=input_images, padding=True, return_tensors="pt").to(args.device) 
     outputs = language_model.generate(**inputs, **generation_args)
-    answers = processor.batch_decode(outputs, skip_special_tokens=True)
+    answers = processor.batch_decode(outputs[:, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
 
     # offload language model to CPU
     language_model.to('cpu')

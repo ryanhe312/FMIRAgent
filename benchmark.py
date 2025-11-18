@@ -128,6 +128,7 @@ if __name__ == "__main__":
     parser.add_argument("--output-path", type=str, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--force-plan", type=str, default=None)
+    parser.add_argument("--no-reasoning", action="store_true")
     parser.add_argument("--unseen-dataset", action="store_true")
     args = parser.parse_args()
 
@@ -141,8 +142,8 @@ if __name__ == "__main__":
         paths = ["dataset/test_split/DIV2K_Agents_0314",'dataset/test_split/Flouresceneiso_Agents_New','dataset/test_split/Flouresceneproj_Agents_New','dataset/test_split/FlouresceneVCD_Agents_New']
         names = ["Normal","Isotropic","Projection","Volumetric"]
     else:
-        paths = ["Shareloc","DeepBacs",'DeepSemi','Motion']
-        names = ["Shareloc","DeepBacs",'DeepSemi','Motion']
+        paths = ["Shareloc","DeepBacs",'DeepSemi','Motion','F-actin']
+        names = ["Shareloc","DeepBacs",'DeepSemi','Motion','F-actin']
 
     # Iterate over each dataset
     for path, name in zip(paths, names):
@@ -194,6 +195,7 @@ if __name__ == "__main__":
         print(f"Average dists: {avg_dists:.4f} ± {std_dists:.4f}")
 
         # Save the results to a text file
+        os.makedirs(args.output_path, exist_ok=True)
         result_path = os.path.join(args.output_path, f"results_{name}.txt")
         with open(result_path, "w") as f:
             for i in range(len(psnr_values)):
