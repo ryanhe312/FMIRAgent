@@ -32,9 +32,7 @@ wget https://zenodo.org/records/15254620/files/model.zip
 unzip model.zip
 ```
 
-## Usage
-
-### Web Interface
+### 3. Run Web Interface
 
 The interactive web interface allows you to easily restore your microscopy images.
 
@@ -46,20 +44,11 @@ python app.py
 
 The web UI will be available at `http://0.0.0.0:8989`. You can customize the model loading and execution with the following arguments:
 
-| Argument              | Description                                       | Default                      |
-| --------------------- | ------------------------------------------------- | ---------------------------- |
-| `--model-path`        | Path to the fine-tuned model checkpoint.          | `experiment/FMIRAgent`       |
-| `--model-base`        | Base model identifier from HuggingFace.           | `Qwen/Qwen2-VL-2B-Instruct`  |
-| `--device`            | The device to run the model on.                   | `cuda:0`                     |
-| `--temperature`       | Sampling temperature for generation.              | `0.1`                        |
-| `--repetition-penalty`| Repetition penalty for generation.                | `1.0`                        |
-| `--max-new-tokens`    | Maximum number of new tokens to generate.         | `256`                        |
-
-### Benchmarking
+## Benchmarking
 
 You can evaluate the agent's performance on benchmark datasets.
 
-#### 1. Download Datasets
+### 1. Download Datasets
 
 - **Our Dataset**: Download from [Zenodo](https://zenodo.org/records/15254620/files/dataset.zip) and unzip to get the `dataset` folder.
 
@@ -75,7 +64,7 @@ wget https://zenodo.org/records/15469845/files/unseen_dataset.zip
 unzip unseen_dataset.zip
 ```
 
-#### 2. Run Benchmark Script
+### 2. Run Benchmark Script
 
 **Benchmark with our dataset:**
 
@@ -91,20 +80,31 @@ python benchmark.py --output-path unseen_dataset_results --unseen-dataset
 
 The script saves restored images and a `results_{dataset_name}.txt` file with performance metrics (PSNR, SSIM, LPIPS, NRMSE) in the specified output path.
 
-**Benchmark Arguments:**
+##  Evaluate the Quality of Explanations
 
-| Argument              | Description                                       | Default                      |
-| --------------------- | ------------------------------------------------- | ---------------------------- |
-| `--model-path`        | Path to the fine-tuned model checkpoint.          | `experiment/FMIRAgent`       |
-| `--model-base`        | Base model identifier from HuggingFace.           | `Qwen/Qwen2-VL-2B-Instruct`  |
-| `--device`            | The device to run the model on.                   | `cuda:0`                     |
-| `--temperature`       | Sampling temperature for generation.              | `0.1`                        |
-| `--repetition-penalty`| Repetition penalty for generation.                | `1.0`                        |
-| `--max-new-tokens`    | Maximum number of new tokens to generate.         | `256`                        |
-| `--output-path`       | Directory to save benchmark results.              | `None`                       |
-| `--batch-size`        | Number of images to process in a batch.           | `8`                          |
-| `--force-plan`        | Use a fixed plan for all images instead of generating one. | `None`              |
-| `--unseen-dataset`    | Flag to run benchmark on the unseen datasets.     | `False`                      |
+
+### 1. Reliability (CC-SHAP)
+
+The `reliability.py` script measures the faithfulness of the agent's explanations (`<think>` block) to its final answer (`<answer>` block) using the CC-SHAP metric. A lower cosine distance indicates higher consistency.
+
+```bash
+python reliability.py --n-shap-samples 20
+```
+
+The results, including average cosine distance, correlation, and other metrics, will be saved to a `cc_shap_results_*.json` file.
+
+### 2. Uncertainty (Semantic Entropy)
+
+The `uncertainty.py` script quantifies the model's uncertainty by calculating the Semantic Entropy of its generated answers. This requires a DeepSeek API key to cluster semantically similar responses.
+
+```bash
+export DEEPSEEK_API_KEY="your_deepseek_api_key"
+python uncertainty.py --n-entropy-samples 5
+```
+
+The script generates multiple answers for each input, clusters them, and calculates the entropy. The aggregated results will be saved to a `semantic_entropy_results_*.json` file.
+
+
 
 ## License
 

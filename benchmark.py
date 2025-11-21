@@ -142,8 +142,8 @@ if __name__ == "__main__":
         paths = ["dataset/test_split/DIV2K_Agents_0314",'dataset/test_split/Flouresceneiso_Agents_New','dataset/test_split/Flouresceneproj_Agents_New','dataset/test_split/FlouresceneVCD_Agents_New']
         names = ["Normal","Isotropic","Projection","Volumetric"]
     else:
-        paths = ["Shareloc","DeepBacs",'DeepSemi','Motion','F-actin']
-        names = ["Shareloc","DeepBacs",'DeepSemi','Motion','F-actin']
+        paths = ["Shareloc","DeepBacs",'DeepSemi-T4','DeepSemi-EGFP','Motion','F-actin']
+        names = ["Shareloc","DeepBacs",'DeepSemi-T4','DeepSemi-EGFP','Motion','F-actin']
 
     # Iterate over each dataset
     for path, name in zip(paths, names):
