@@ -2,7 +2,6 @@ import os
 import cv2
 import torch
 import json
-import utility
 import numpy as np
 import gradio as gr
 import numpy as np
@@ -10,11 +9,10 @@ import model
 import random
 
 from functools import partial
-from div2k import normalize
 from transformers import TextIteratorStreamer
 from qwen_vl_utils import process_vision_info
 from tifffile import imread, imwrite as imsave
-from qwen2.src.utils import load_pretrained_model, get_model_name_from_path, disable_torch_init
+from utils import *
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -202,7 +200,7 @@ def load_model(type, device='CUDA', chop=False, quantization='float32', skip='No
     
     ARGS.scale = list(map(lambda x: int(x), ARGS.scale.split('+')))
 
-    checkpoint = utility.checkpoint(ARGS)
+    checkpoint = Checkpoint(ARGS)
     MODEL = model.Model(ARGS, checkpoint)
     MODEL.eval()
 
@@ -225,115 +223,18 @@ def visualize(img_input, progress=gr.Progress()):
     print(f'Image shape: {shape}')
 
     if len(shape) == 2:
-        image = utility.savecolorim(None, image, norm=True)
+        image = savecolorim(None, image, norm=True)
         return [[image], f'2D image loaded with shape {shape}']
     elif len(shape) == 3:
         clips = []
         # show middle 10 slices
         image = image[max(shape[0]//2-5, 0):min(shape[0]//2+5, shape[0])]
         for clip in image:
-            clips.append(utility.savecolorim(None, clip, norm=True))
+            clips.append(savecolorim(None, clip, norm=True))
         return [clips, f'3D image loaded with shape {shape}']
     else:
         gr.Error("Image must be 2 or 3 dimensional!")
         return None
-    
-
-def normalize(x, pmin=3, pmax=99.8, axis=None, clip=False, eps=1e-20, dtype=np.float32):
-    """Percentile-based image normalization."""
-    
-    mi = np.percentile(x, pmin, axis=axis, keepdims=True)
-    ma = np.percentile(x, pmax, axis=axis, keepdims=True)
-    # print('minmax: ', mi, ma)
-    return normalize_mi_ma(x, mi, ma, clip=clip, eps=eps, dtype=dtype)
-
-
-def normalize_mi_ma(x, mi, ma, clip=False, eps=1e-20, dtype=np.float32):
-    if dtype is not None:
-        x = x.astype(dtype, copy=False)
-        mi = dtype(mi) if np.isscalar(mi) else mi.astype(dtype, copy=False)
-        ma = dtype(ma) if np.isscalar(ma) else ma.astype(dtype, copy=False)
-        eps = dtype(eps)
-    
-    x = (x - mi) / (ma - mi + eps)
-
-    if clip:
-        x = np.clip(x, 0, 1)
-    
-    return x
-    
-def rearrange3d_fn(image):
-    """ re-arrange image of shape[depth, height, width] into shape[height, width, depth]
-    """
-
-    image = np.squeeze(image)  # remove channels dimension
-    # print('reshape : ' + str(image.shape))
-    depth, height, width = image.shape
-    image_re = np.zeros([height, width, depth])
-    for d in range(depth):
-        image_re[:, :, d] = image[d, :, :]
-    return image_re
-
-def lf_extract_fn(lf2d, n_num=11, mode='toChannel', padding=False):
-    """
-    Extract different views from a single LF projection
-
-    Params:
-        -lf2d: numpy.array, 2-D light field projection in shape of [height, width, channels=1]
-        -mode - 'toDepth' -- extract views to depth dimension (output format [depth=multi-slices, h, w, c=1])
-                'toChannel' -- extract views to channel dimension (output format [h, w, c=multi-slices])
-        -padding -   True : keep extracted views the same size as lf2d by padding zeros between valid pixels
-                        False : shrink size of extracted views to (lf2d.shape / Nnum);
-    Returns:
-        ndarray [height, width, channels=n_num^2] if mode is 'toChannel'
-                or [depth=n_num^2, height, width, channels=1] if mode is 'toDepth'
-    """
-    n = n_num
-    h, w, c = lf2d.shape
-    if padding:
-        if mode == 'toDepth':
-            lf_extra = np.zeros([n * n, h, w, c])  # [depth, h, w, c]
-        
-            d = 0
-            for i in range(n):
-                for j in range(n):
-                    lf_extra[d, i: h: n, j: w: n, :] = lf2d[i: h: n, j: w: n, :]
-                    d += 1
-        elif mode == 'toChannel':
-            lf2d = np.squeeze(lf2d)
-            lf_extra = np.zeros([h, w, n * n])
-            
-            d = 0
-            for i in range(n):
-                for j in range(n):
-                    lf_extra[i: h: n, j: w: n, d] = lf2d[i: h: n, j: w: n]
-                    d += 1
-        else:
-            raise Exception('unknown mode : %s' % mode)
-    else:
-        new_h = int(np.ceil(h / n))
-        new_w = int(np.ceil(w / n))
-    
-        if mode == 'toChannel':
-            lf2d = np.squeeze(lf2d)
-            lf_extra = np.zeros([new_h, new_w, n * n])
-        
-            d = 0
-            for i in range(n):
-                for j in range(n):
-                    lf_extra[:, :, d] = lf2d[i: h: n, j: w: n]
-                    d += 1
-        elif mode == 'toDepth':
-            lf_extra = np.zeros([n * n, new_h, new_w, c])  # [depth, h, w, c]
-            d = 0
-            for i in range(n):
-                for j in range(n):
-                    lf_extra[d, :, :, :] = lf2d[i: h: n, j: w: n, :]
-                    d += 1
-        else:
-            raise Exception('unknown mode : %s' % mode)
-
-    return lf_extra
 
 def load_models(device, chop, quantization, args, progress=gr.Progress()):
     global sr_models, noise_models, proj_models, iso_models, vol_models, processor, language_model
@@ -429,7 +330,7 @@ def run_plan(data_image, plan, progress=gr.Progress()):
 
     image = image.squeeze().cpu().numpy().clip(0,1)
     axes = "YX" if not "Volumetric" in plan else "ZYX"
-    utility.save_tiff_imagej_compatible('output.tif', image, axes)
+    save_tiff_imagej_compatible('output.tif', image, axes)
     return ['output.tif', "Output Successfully Saved!"]
 
 def set_seed(seed: int):

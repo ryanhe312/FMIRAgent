@@ -264,7 +264,7 @@ if __name__ == "__main__":
     deepseek_client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
     print("Loading Local VLM (Qwen)...")
-    from qwen2.src.utils import load_pretrained_model, get_model_name_from_path, disable_torch_init
+    from utils import load_pretrained_model, get_model_name_from_path, disable_torch_init
     disable_torch_init()
     model_name = get_model_name_from_path(args.model_path)
     processor, model = load_pretrained_model(model_base=args.model_base, model_path=args.model_path, model_name=model_name, device=args.device)

@@ -103,7 +103,7 @@ def get_dataset(path, output_path,name):
         gt_path = sorted(glob.glob(os.path.join(path, "*", "HR.tif")))
         save_path = [p.replace("LR", "SR").replace(path,os.path.join(output_path,name)) for p in input_path]
 
-    elif name == "DeepSemi":
+    elif name.startswith("DeepSemi"):
         # Get the paths for input, ground truth, and save directories
         input_path = sorted(glob.glob(os.path.join(path, "*noisy", "*.tif")))
         gt_path = sorted(glob.glob(os.path.join(path, "*clean", "*.tif")))
@@ -122,7 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-path", type=str, default="experiment/FMIRAgent")
     parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--output-path", type=str, default=None)
