@@ -25,11 +25,17 @@ pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.
 
 ### 2. Download Models
 
-Download the pre-trained models from [Zenodo](https://zenodo.org/records/15254620/files/model.zip) and unzip the file. This will create an `experiment` folder in the project root.
+Download the pre-trained models from [Zenodo](https://zenodo.org/records/17988450) and unzip the file. This will create an `experiment` folder in the project root.
 
 ```bash
-wget https://zenodo.org/records/15254620/files/model.zip
+wget https://zenodo.org/records/17988450/files/model.zip
 unzip model.zip
+
+wget https://zenodo.org/records/17988450/files/model-7B.1.zip
+wget https://zenodo.org/records/17988450/files/model-7B.2.zip
+wget https://zenodo.org/records/17988450/files/model-7B.3.zip
+wget https://zenodo.org/records/17988450/files/model-7B.4.zip
+unzip "model-7B.*.zip"
 ```
 
 ### 3. Run Web Interface
@@ -44,24 +50,27 @@ python app.py
 
 The web UI will be available at `http://0.0.0.0:8989`. You can customize the model loading and execution with the following arguments:
 
-## Benchmarking
+## Benchmarking the Performance
 
 You can evaluate the agent's performance on benchmark datasets.
 
 ### 1. Download Datasets
 
-- **Our Dataset**: Download from [Zenodo](https://zenodo.org/records/15254620/files/dataset.zip) and unzip to get the `dataset` folder.
+- **Our Dataset**: Download from [Zenodo](https://zenodo.org/records/17988450) and unzip to get the `dataset` folder.
 
 ```
-wget https://zenodo.org/records/15254620/files/dataset.zip
+wget https://zenodo.org/records/17988450/files/dataset.zip
 unzip dataset.zip
 ```
 
-- **Unseen Dataset**: Download from [Zenodo](https://zenodo.org/records/15469845/files/unseen_dataset.zip) and unzip to get `Shareloc` and `DeepBacs` folders.
+- **Unseen Dataset**: Download from [Zenodo](https://zenodo.org/records/17988450) and unzip to get `Shareloc`, `DeepBacs`, `DeepSemi-T4`, `Motion` and `F-actin` folders.
 
 ```
-wget https://zenodo.org/records/15469845/files/unseen_dataset.zip
+wget https://zenodo.org/records/17988450/files/unseen_dataset.zip
 unzip unseen_dataset.zip
+
+wget https://zenodo.org/records/17988450/files/ood_dataset.zip
+unzip ood_dataset.zip
 ```
 
 ### 2. Run Benchmark Script
@@ -78,7 +87,7 @@ python benchmark.py --output-path our_dataset_results
 python benchmark.py --output-path unseen_dataset_results --unseen-dataset
 ```
 
-The script saves restored images and a `results_{dataset_name}.txt` file with performance metrics (PSNR, SSIM, LPIPS, NRMSE) in the specified output path.
+The script saves restored images and a `results_{dataset_name}.txt` file with performance metrics (PSNR, SSIM, LPIPS, DISTS) in the specified output path.
 
 ##  Evaluate the Quality of Explanations
 

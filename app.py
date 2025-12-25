@@ -14,7 +14,7 @@ def load_models_wrap(device, chop, quantization, progress=gr.Progress()):
     return load_models(device, chop, quantization, args, progress)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model-path", type=str, default="experiment/FMIRAgent")
+parser.add_argument("--model-path", type=str, default="experiment/FMIRAgent-7B")
 parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
 parser.add_argument("--device", type=str, default="cuda:0")
 parser.add_argument("--temperature", type=float, default=0)

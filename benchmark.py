@@ -105,9 +105,43 @@ def get_dataset(path, output_path,name):
 
     elif name.startswith("DeepSemi"):
         # Get the paths for input, ground truth, and save directories
-        input_path = sorted(glob.glob(os.path.join(path, "*noisy", "*.tif")))
-        gt_path = sorted(glob.glob(os.path.join(path, "*clean", "*.tif")))
-        save_path = [p.replace("noisy", "denoise").replace(path,os.path.join(output_path,name)) for p in input_path]
+        raw_input_path = sorted(glob.glob(os.path.join(path, "*noisy", "*.tif")))
+        raw_gt_path = sorted(glob.glob(os.path.join(path, "*clean", "*.tif")))
+        
+        # Create directory for averaged inputs
+        avg_input_dir = os.path.join(output_path, name, "averaged_input")
+        os.makedirs(avg_input_dir, exist_ok=True)
+        
+        input_path = []
+        gt_path = []
+        save_path = []
+
+        print(f"Preprocessing {name} dataset: Averaging 3 frames...")
+        for i in tqdm.tqdm(range(1, len(raw_input_path) - 1), desc="Averaging frames"):
+            # Ensure files are from the same sequence (same directory)
+            if os.path.dirname(raw_input_path[i-1]) != os.path.dirname(raw_input_path[i]) or \
+               os.path.dirname(raw_input_path[i]) != os.path.dirname(raw_input_path[i+1]):
+                continue
+
+            # Define new filename
+            base_name = os.path.basename(raw_input_path[i])
+            new_file_path = os.path.join(avg_input_dir, base_name)
+            
+            if not os.path.exists(new_file_path):
+                img_prev = imread(raw_input_path[i-1]).astype(np.float32)
+                img_curr_raw = imread(raw_input_path[i])
+                dtype = img_curr_raw.dtype
+                img_curr = img_curr_raw.astype(np.float32)
+                img_next = imread(raw_input_path[i+1]).astype(np.float32)
+                
+                avg_img = (img_prev + img_curr + img_next) / 3.0
+                avg_img = avg_img.astype(dtype)
+                
+                imsave(new_file_path, avg_img)
+            
+            input_path.append(new_file_path)
+            gt_path.append(raw_gt_path[i])
+            save_path.append(raw_input_path[i].replace("noisy", "denoise").replace(path, os.path.join(output_path, name)))
 
     else:
         # Get the paths for input, ground truth, and save directories
@@ -119,7 +153,7 @@ def get_dataset(path, output_path,name):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="experiment/FMIRAgent")
+    parser.add_argument("--model-path", type=str, default="experiment/FMIRAgent-7B")
     parser.add_argument("--model-base", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--temperature", type=float, default=0)
@@ -142,8 +176,8 @@ if __name__ == "__main__":
         paths = ["dataset/test_split/DIV2K_Agents_0314",'dataset/test_split/Flouresceneiso_Agents_New','dataset/test_split/Flouresceneproj_Agents_New','dataset/test_split/FlouresceneVCD_Agents_New']
         names = ["Normal","Isotropic","Projection","Volumetric"]
     else:
-        paths = ["Shareloc","DeepBacs",'DeepSemi-T4','DeepSemi-EGFP','Motion','F-actin']
-        names = ["Shareloc","DeepBacs",'DeepSemi-T4','DeepSemi-EGFP','Motion','F-actin']
+        paths = ["Shareloc","DeepBacs",'DeepSemi-T4','Motion','F-actin']
+        names = ["Shareloc","DeepBacs",'DeepSemi-T4','Motion','F-actin']
 
     # Iterate over each dataset
     for path, name in zip(paths, names):
@@ -198,8 +232,6 @@ if __name__ == "__main__":
         os.makedirs(args.output_path, exist_ok=True)
         result_path = os.path.join(args.output_path, f"results_{name}.txt")
         with open(result_path, "w") as f:
-            for i in range(len(psnr_values)):
-                f.write(f"Image {i+1}: PSNR={psnr_values[i]:.2f}, SSIM={ssim_values[i]:.4f}, LPIPS={lpips_values[i]:.4f}, dists={dists_values[i]:.4f} PLAN={plan_messages[i]} TIME={plan_times[i//batch_size]:.2f}s\n")
             f.write(f"Average PSNR: {avg_psnr:.2f} ± {std_psnr:.2f}\n")
             f.write(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}\n")
             f.write(f"Average LPIPS: {avg_lpips:.4f} ± {std_lpips:.4f}\n")
