@@ -163,6 +163,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--force-plan", type=str, default=None)
     parser.add_argument("--no-reasoning", action="store_true")
+    parser.add_argument("--use-ft", action="store_true", help="Use fine-tuned versions of SR and Denoising models")
     parser.add_argument("--unseen-dataset", action="store_true")
     args = parser.parse_args()
 

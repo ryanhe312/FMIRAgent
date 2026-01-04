@@ -50,6 +50,15 @@ python app.py
 
 The web UI will be available at `http://0.0.0.0:8989`. You can customize the model loading and execution with the following arguments:
 
+### (optional) Using Fine-tuned Restoration Models
+
+You can use fine-tuned versions of the Super-Resolution (SR) and Denoising models by adding the `--use-ft` flag to either the web interface or the benchmark script. These models provide optimized performance for DeepBacs dataset.
+
+**To use fine-tuned models in the Web UI:**
+```bash
+python app.py --use-ft
+```
+
 ## Benchmarking the Performance
 
 You can evaluate the agent's performance on benchmark datasets.

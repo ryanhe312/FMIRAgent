@@ -96,8 +96,9 @@ class Args:
     split_batch = 1
     gan_k = 1
 
-def load_model(type, device='CUDA', chop=False, quantization='float32', skip='No'):
+def load_model(type, device='CUDA', chop=False, quantization='float32', skip='No', use_ft=False):
     ARGS = Args()
+    suffix = "-ft" if use_ft else ""
 
     if quantization == 'float16':
         ARGS.precision = 'half'
@@ -126,13 +127,13 @@ def load_model(type, device='CUDA', chop=False, quantization='float32', skip='No
 
         if type == 'SR_5':
             ARGS.save = 'SwinIR'
-            ARGS.modelpath = 'experiment/SwinIR-degrade-b5/model/model_best.pt'
+            ARGS.modelpath = f'experiment/SwinIR-degrade{suffix}-b5/model/model_best.pt'
         elif type == 'SR_7':
             ARGS.save = 'SwinIR'
-            ARGS.modelpath = 'experiment/SwinIR-degrade-b7/model/model_best.pt'
+            ARGS.modelpath = f'experiment/SwinIR-degrade{suffix}-b7/model/model_best.pt'
         elif type == 'SR_9':
             ARGS.save = 'SwinIR'
-            ARGS.modelpath = 'experiment/SwinIR-degrade-b9/model/model_best.pt'
+            ARGS.modelpath = f'experiment/SwinIR-degrade{suffix}-b9/model/model_best.pt'
         else:
             print("Model not found!")
             return "Model not found"
@@ -145,13 +146,13 @@ def load_model(type, device='CUDA', chop=False, quantization='float32', skip='No
         
         if type == 'Denoising_10':
             ARGS.save = 'SwinIR'
-            ARGS.modelpath = 'experiment/SwinIR-degrade-n10/model/model_best.pt'
+            ARGS.modelpath = f'experiment/SwinIR-degrade{suffix}-n10/model/model_best.pt'
         elif type == 'Denoising_20':
             ARGS.save = 'SwinIR'
-            ARGS.modelpath = 'experiment/SwinIR-degrade-n20/model/model_best.pt'
+            ARGS.modelpath = f'experiment/SwinIR-degrade{suffix}-n20/model/model_best.pt'
         elif type == 'Denoising_30':
             ARGS.save = 'SwinIR'
-            ARGS.modelpath = 'experiment/SwinIR-degrade-n30/model/model_best.pt'
+            ARGS.modelpath = f'experiment/SwinIR-degrade{suffix}-n30/model/model_best.pt'
         else:
             print("Model not found!")
             return "Model not found"
@@ -239,7 +240,8 @@ def visualize(img_input, progress=gr.Progress()):
 def load_models(device, chop, quantization, args, progress=gr.Progress()):
     global sr_models, noise_models, proj_models, iso_models, vol_models, processor, language_model
 
-    load_fn = partial(load_model, device=device, chop=chop, quantization=quantization)
+    use_ft = getattr(args, 'use_ft', False)
+    load_fn = partial(load_model, device=device, chop=chop, quantization=quantization, use_ft=use_ft)
 
     # load restoration models
     sr_models = {'SR_None': (lambda x,y: x), 'SR_5': load_fn('SR_5'), 'SR_7': load_fn('SR_7'), 'SR_9': load_fn('SR_9')}

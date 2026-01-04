@@ -20,6 +20,7 @@ parser.add_argument("--device", type=str, default="cuda:0")
 parser.add_argument("--temperature", type=float, default=0)
 parser.add_argument("--repetition-penalty", type=float, default=1.0)
 parser.add_argument("--no-reasoning", action="store_true")
+parser.add_argument("--use-ft", action="store_true", help="Use fine-tuned versions of SR and Denoising models")
 parser.add_argument("--max-new-tokens", type=int, default=256)
 args = parser.parse_args()
 
