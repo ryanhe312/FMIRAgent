@@ -8,19 +8,11 @@ https://github.com/user-attachments/assets/db90b91f-b787-471d-acaa-62ebf02d6929
 
 ### 1. Environment Setup
 
-First, clone the repository and set up the Conda environment.
+First, clone the repository and set up the environment. Windows and Linux users can follow the same instructions.
 
 ```bash
-git clone https://github.com/your-username/FMIRAgent.git
-cd FMIRAgent
-conda env create -f environment.yaml
-conda activate fmiragent
-```
-
-Then, install `flash-attention` for optimized performance:
-
-```bash
-pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+pip install uv
+uv sync
 ```
 
 ### 2. Download Models
@@ -45,7 +37,7 @@ The interactive web interface allows you to easily restore your microscopy image
 **Run the application:**
 
 ```bash
-python app.py
+uv run app.py
 ```
 
 The web UI will be available at `http://0.0.0.0:8989`. You can customize the model loading and execution with the following arguments:
@@ -56,7 +48,7 @@ You can use fine-tuned versions of the Super-Resolution (SR) and Denoising model
 
 **To use fine-tuned models in the Web UI:**
 ```bash
-python app.py --use-ft
+uv run app.py --use-ft
 ```
 
 ## Benchmarking the Performance
@@ -87,13 +79,13 @@ unzip ood_dataset.zip
 **Benchmark with our dataset:**
 
 ```bash
-python benchmark.py --output-path our_dataset_results
+uv run benchmark.py --output-path our_dataset_results
 ```
 
 **Benchmark with unseen dataset:**
 
 ```bash
-python benchmark.py --output-path unseen_dataset_results --unseen-dataset
+uv run benchmark.py --output-path unseen_dataset_results --unseen-dataset
 ```
 
 The script saves restored images and a `results_{dataset_name}.txt` file with performance metrics (PSNR, SSIM, LPIPS, DISTS) in the specified output path.
@@ -106,7 +98,7 @@ The script saves restored images and a `results_{dataset_name}.txt` file with pe
 The `reliability.py` script measures the faithfulness of the agent's explanations (`<think>` block) to its final answer (`<answer>` block) using the CC-SHAP metric. A lower cosine distance indicates higher consistency.
 
 ```bash
-python reliability.py --n-shap-samples 20
+uv run reliability.py --n-shap-samples 20
 ```
 
 The results, including average cosine distance, correlation, and other metrics, will be saved to a `cc_shap_results_*.json` file.
@@ -117,7 +109,7 @@ The `uncertainty.py` script quantifies the model's uncertainty by calculating th
 
 ```bash
 export DEEPSEEK_API_KEY="your_deepseek_api_key"
-python uncertainty.py --n-entropy-samples 5
+uv run uncertainty.py --n-entropy-samples 5
 ```
 
 The script generates multiple answers for each input, clusters them, and calculates the entropy. The aggregated results will be saved to a `semantic_entropy_results_*.json` file.

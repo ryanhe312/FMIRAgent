@@ -12,7 +12,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lrs
 from tifffile import imwrite as imsave
 from peft import PeftModel
-from transformers import BitsAndBytesConfig, Qwen2VLForConditionalGeneration, AutoProcessor, AutoConfig, AutoModelForVision2Seq
+from transformers import AutoProcessor, AutoConfig, AutoModelForVision2Seq
 try:
     from skimage.metrics import structural_similarity as compare_ssim
     from skimage.metrics import peak_signal_noise_ratio as compare_psnr
@@ -37,6 +37,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     if load_8bit:
         kwargs['load_in_8bit'] = True
     elif load_4bit:
+        from transformers import BitsAndBytesConfig
         kwargs['quantization_config'] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
