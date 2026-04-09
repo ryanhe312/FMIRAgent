@@ -90,6 +90,33 @@ uv run benchmark.py --output-path unseen_dataset_results --unseen-dataset
 
 The script saves restored images and a `results_{dataset_name}.txt` file with performance metrics (PSNR, SSIM, LPIPS, DISTS) in the specified output path.
 
+## Run with Docker 
+
+If you prefer a containerized setup, you can run FMIRAgent with Docker.
+
+### 1. Download models and datasets:
+
+Refer to previous sections and place them in the `experiment` and `dataset` directories.
+
+### 2. Build image or use pre-built image:
+
+```bash
+docker build -t fmiragent .
+```
+
+### 3. Run Web UI with GPU:
+
+```bash
+docker run --rm -it \
+    --gpus all \
+    -p 8989:8989 \
+    -v $(pwd)/experiment:/app/experiment \
+    -v $(pwd)/dataset:/app/dataset \
+    fmiragent
+```
+
+Then open `http://0.0.0.0:8989` in your browser.
+
 ##  Evaluate the Quality of Explanations
 
 

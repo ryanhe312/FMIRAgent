@@ -1,0 +1,26 @@
+.git
+*.zip
+*.csv
+*.json
+.gitignore
+*.pyc
+*.pyo
+*.pyd
+*.ipynb
+*.log
+
+# Build and cache
+__pycache__/
+.venv/
+
+# Local datasets and outputs
+test/
+experiment/
+dataset/
+Shareloc/
+DeepBacs/
+DeepSemi*/
+F-actin/
+Motion*/
+our_dataset*/
+unseen_dataset*/
